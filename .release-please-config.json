@@ -1,0 +1,11 @@
+{
+  "release-type": "simple",
+  "packages": {
+    ".": {
+      "package-name": "mnedochetova-vibe",
+      "changelog-path": "CHANGELOG.md",
+      "version-file": "VERSION"
+    }
+  }
+}
+
