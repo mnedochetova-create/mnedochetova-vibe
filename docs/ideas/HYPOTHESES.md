@@ -96,4 +96,5 @@
 
 PRD/SPEC **B2B‑бота для агентств и отелей** (VoC + отзывы): `docs/B2B bot agencies/PRD_B2B_bot_agencies_hotels.md`, `docs/B2B bot agencies/SPEC_B2B_bot_agencies_hotels.md`.
 
-PRD/SPEC **семейного travel‑бота‑ассистента в Telegram** (планировщик + мониторинг цен): `docs/Family travel bot/PRD_family_travel_bot_assistant_telegram.md`, `docs/Family travel bot/SPEC_family_travel_bot_assistant_telegram.md`.
+Основной документ **семейного travel‑бота‑ассистента в Telegram** (планировщик + мониторинг цен): `docs/Family travel bot/PRODUCT_CARD.md`.  
+Архив: `docs/Family travel bot/archive/`.

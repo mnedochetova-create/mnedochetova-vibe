@@ -4,4 +4,5 @@
 
 Расширенный бенчмарк и список гипотез (в т. ч. B2B‑бот для агентств и отелей, семейный travel‑бот‑ассистент) — в **`Гипотезы проектов.md`**.
 
-PRD/SPEC семейного travel‑бота‑ассистента: **`Family travel bot/PRD_family_travel_bot_assistant_telegram.md`**, **`Family travel bot/SPEC_family_travel_bot_assistant_telegram.md`** (папка `docs/Family travel bot/`).
+Основной документ семейного travel‑бота‑ассистента: **`Family travel bot/PRODUCT_CARD.md`** (папка `docs/Family travel bot/`).  
+Архивные версии: **`Family travel bot/archive/`**.

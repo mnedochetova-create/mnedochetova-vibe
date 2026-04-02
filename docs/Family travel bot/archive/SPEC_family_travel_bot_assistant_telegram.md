@@ -116,3 +116,4 @@
 - `trips` — привязка `preferences`, `tickets`, `watchlists` к одной поездке
 - `alert_rules` — порог %, cron, quiet hours
 - `experiments` / `user_experiment_assignments` — при росте числа тестов
+
