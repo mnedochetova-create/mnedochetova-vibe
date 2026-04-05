@@ -17,7 +17,8 @@
    - `PRD.md` (продуктовое описание)
    - `SPEC.md` (техническая спецификация)
 2. (Опционально) Используй готовые агент-профили из `docs/agents/`:
-   - `docs/agents/product-trend-researcher.md`
+   - `docs/agents/product-trend-researcher.md` — тренды и рынок
+   - `docs/agents/marketing-content-creator.md` — маркетинговый контент и стратегия
 3. Выбери стек для бота и создай рабочий код внутри `bot/`.
 4. Добавь запуск, тесты и CI по мере развития проекта.
 
