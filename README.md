@@ -9,6 +9,7 @@
 - `docs/B2B bot agencies/` — PRD/SPEC B2B‑бота для агентств и отелей
 - `docs/Family travel bot/` — PRD/SPEC семейного travel‑бота‑ассистента
 - `docs/agents/` — полезные агент-профили для исследования и стратегии
+- `.cursor/rules/` — правила Cursor для этого репозитория (доки, бот, git, UX)
 
 ## Быстрый старт
 
