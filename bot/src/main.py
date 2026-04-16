@@ -65,10 +65,10 @@ def extract_brief_from_text(text: str) -> Dict[str, Any]:
         brief["budget_rub_max"] = num
 
     # Adults / kids: "2 взрослых", "1 ребенок 6", "ребёнок 6 лет"
-    m = re.search(r"(\d+)\s*(?:взросл", t)
+    m = re.search(r"(\d+)\s*взросл", t)
     if m:
         brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*(?:дет|реб", t)
+    m = re.search(r"(\d+)\s*(?:дет|реб)", t)
     if m:
         brief["kids_count"] = int(m.group(1))
     m = re.search(r"(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)", t)
