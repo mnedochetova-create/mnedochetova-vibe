@@ -20,6 +20,7 @@ alwaysApply: true
 ## Релизы
 
 - Значимые этапы: обновить `VERSION` и `CHANGELOG.md`, при необходимости `.release-please-manifest.json`, тег `vX.Y.Z`, push тега.
+- **Release Please:** если Actions не может открыть PR релиза, в настройках репозитория включить разрешение для GITHUB_TOKEN создавать PR (Settings → Actions → General), либо задать секрет `RELEASE_PLEASE_TOKEN` (PAT с правами на PR и содержимое репозитория) — см. комментарий в `.github/workflows/release-please.yml`.
 - Если push по HTTPS падает на учётных данных — настроить доступ (PAT/SSH) в среде пользователя; при выполнении команд агентом при необходимости запрашивать сетевые права.
 
 ## Ветки

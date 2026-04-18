@@ -1,3 +1,8 @@
+# Release Please открывает PR релиза от имени токена.
+# Если workflow падает с «not permitted to create or approve pull requests»:
+#   1) Репозиторий: Settings → Actions → General → Workflow permissions:
+#      выбрать «Read and write» и включить «Allow GitHub Actions to create and approve pull requests»; или
+#   2) Создать PAT (repo / pull requests) и сохранить в секрет RELEASE_PLEASE_TOKEN — он используется ниже, если задан.
 name: Release Please
 
 on:
@@ -16,6 +21,7 @@ jobs:
       - name: Run release-please
         uses: googleapis/release-please-action@v4
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN != '' && secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
