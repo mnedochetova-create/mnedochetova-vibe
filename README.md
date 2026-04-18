@@ -28,17 +28,18 @@
 
 Чтобы `GITHUB_TOKEN` мог **создавать PR** (иначе в логах: `not permitted to create or approve pull requests`):
 
-1. **Через API (с вашей машины):** создайте [PAT](https://github.com/settings/tokens) (classic: scope `repo`, либо fine-grained: *Administration* — Read and write на этом репозитории), затем:
+1. **Через API на GitHub (удобно):** [создайте PAT](https://github.com/settings/tokens) (classic: scope **`repo`**, либо fine-grained: **Administration — Read and write** на этом репозитории). В репозитории: **Settings → Secrets and variables → Actions** → секрет **`REPO_ADMIN_PAT`** = значение PAT. Затем **Actions → [Configure repo Actions (API)](.github/workflows/configure-repo-actions-api.yml) → Run workflow** — workflow вызовет [`PUT .../actions/permissions/workflow`](https://docs.github.com/en/rest/actions/permissions#set-default-workflow-permissions-for-a-repository).
+2. **Через API с вашей машины:** тот же PAT в переменной окружения:
    ```bash
    export GITHUB_TOKEN=...   # ваш PAT, не коммитьте в репозиторий
    ./scripts/configure-github-actions-release-automation.sh
    ```
-2. **Через веб:** [Settings → Actions → General](https://github.com/mnedochetova-create/mnedochetova-vibe/settings/actions) → блок **Workflow permissions**:
+3. **Через веб:** [Settings → Actions → General](https://github.com/mnedochetova-create/mnedochetova-vibe/settings/actions) → блок **Workflow permissions**:
    - включите **Read and write permissions**;
    - включите **Allow GitHub Actions to create and approve pull requests**.  
    Если пункт с чекбоксом недоступен (серый), сначала включите то же на уровне [организации](https://docs.github.com/en/organizations/managing-organization-settings/disabling-or-limiting-github-actions-for-your-organization) или enterprise.
 
-Альтернатива без смены настроек репозитория: секрет **`RELEASE_PLEASE_TOKEN`** (PAT с правами на содержимое репо и pull requests) — см. комментарий в workflow.
+Альтернатива без смены политики workflow token: секрет **`RELEASE_PLEASE_TOKEN`** (PAT с правами на содержимое репо и pull requests) — см. комментарий в `release-please.yml`.
 
 После смены настроек запустите workflow вручную: **Actions → Release Please → Run workflow**.
 

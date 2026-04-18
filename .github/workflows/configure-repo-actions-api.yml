@@ -1,0 +1,82 @@
+# Применяет настройки GITHUB_TOKEN для Actions через REST API (как scripts/configure-github-actions-release-automation.sh).
+# Нужен секрет REPO_ADMIN_PAT — classic PAT (scope `repo`) или fine-grained с Administration: Read and write на этом репо.
+# Запуск: Actions → Configure repo Actions (API) → Run workflow.
+name: Configure repo Actions (API)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: configure-repo-actions-api
+  cancel-in-progress: true
+
+jobs:
+  apply-workflow-token-settings:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check REPO_ADMIN_PAT
+        env:
+          PAT: ${{ secrets.REPO_ADMIN_PAT }}
+        run: |
+          if [ -z "${PAT}" ]; then
+            echo "::error::Добавьте в репозиторий секрет REPO_ADMIN_PAT (PAT с правами менять настройки Actions этого репозитория)."
+            exit 1
+          fi
+
+      - name: GET current workflow permissions
+        env:
+          PAT: ${{ secrets.REPO_ADMIN_PAT }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          owner="${REPO_FULL%%/*}"
+          repo="${REPO_FULL#*/}"
+          api="https://api.github.com/repos/${owner}/${repo}/actions/permissions/workflow"
+          echo "GET ${api}"
+          curl -sS -f \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${PAT}" \
+            "${api}" | python3 -m json.tool
+
+      - name: PUT default workflow permissions (write + PR reviews for Actions)
+        env:
+          PAT: ${{ secrets.REPO_ADMIN_PAT }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          owner="${REPO_FULL%%/*}"
+          repo="${REPO_FULL#*/}"
+          api="https://api.github.com/repos/${owner}/${repo}/actions/permissions/workflow"
+          code="$(curl -sS -o /tmp/put_body.txt -w '%{http_code}' -X PUT \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${PAT}" \
+            "${api}" \
+            -d '{"default_workflow_permissions":"write","can_approve_pull_request_reviews":true}')"
+          echo "HTTP ${code}"
+          if [ -s /tmp/put_body.txt ]; then cat /tmp/put_body.txt; fi
+          if [ "${code}" != "204" ]; then
+            echo "::error::Ожидался HTTP 204 (409 = политика org/enterprise блокирует)."
+            exit 1
+          fi
+
+      - name: GET after (verify)
+        env:
+          PAT: ${{ secrets.REPO_ADMIN_PAT }}
+          REPO_FULL: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          owner="${REPO_FULL%%/*}"
+          repo="${REPO_FULL#*/}"
+          api="https://api.github.com/repos/${owner}/${repo}/actions/permissions/workflow"
+          curl -sS -f \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${PAT}" \
+            "${api}" | python3 -m json.tool
+
+      - name: Hint
+        run: |
+          echo "Готово. Запустите Release Please вручную и проверьте, что открывается PR релиза."
+          echo "Если ошибка про «create or approve pull requests» останется — включите чекбокс в Settings → Actions (иногда только из UI)."
