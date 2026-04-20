@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>МН: Каталог впечатлений</title>
+  <style>
+    :root {
+      --bg: #fff;
+      --paper: #fafafa;
+      --text: #0d0d0d;
+      --muted: #5c5c5c;
+      --rule: #0d0d0d;
+      --line: #e4e4e4;
+      --mn-bg: #f4f1ea;
+      --mn-border: #c9b896;
+      /* широкоэкранный слайд 16:9 как в PowerPoint (логический размер 1280×720) */
+      --slide-w: min(calc(100vw - 48px), 1280px);
+    }
+    * { box-sizing: border-box; }
+    html {
+      scroll-snap-type: y mandatory;
+      scroll-behavior: smooth;
+      background: #e8e8e8;
+    }
+    body {
+      margin: 0;
+      font-family: "Styrene ALC", "Helvetica Neue", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      font-weight: 300;
+      color: var(--text);
+      line-height: 1.5;
+      font-size: 15px;
+    }
+    .slide {
+      position: relative;
+      width: var(--slide-w);
+      aspect-ratio: 16 / 9;
+      max-height: min(calc(var(--slide-w) * 9 / 16), calc(100vh - 48px));
+      margin: 24px auto;
+      scroll-snap-align: center;
+      scroll-snap-stop: always;
+      background: var(--bg);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+      border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      padding: 0;
+      overflow: hidden;
+    }
+    .slide-inner {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 1.25rem 1.75rem 1.5rem;
+      min-height: 0;
+      overflow: auto;
+    }
+    .slide-header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-bottom: 0.65rem;
+      margin-bottom: 0.75rem;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.62rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .breadcrumbs {
+      flex: 1;
+      min-width: 0;
+      line-height: 1.35;
+    }
+    .breadcrumbs a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .breadcrumbs a:hover { color: var(--text); }
+    .breadcrumbs .sep { margin: 0 0.35em; opacity: 0.5; }
+    .slide-num {
+      flex-shrink: 0;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.1em;
+    }
+    .cover {
+      background: var(--paper);
+      border-bottom: 3px solid var(--rule);
+      justify-content: center;
+    }
+    .cover .slide-inner { justify-content: center; overflow: visible; }
+    .cover .slide-num {
+      position: absolute;
+      top: 1rem;
+      right: 1.25rem;
+      border-bottom: none;
+      margin: 0;
+      padding: 0;
+    }
+    .kicker {
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 0.65rem;
+    }
+    .cover h1 {
+      margin: 0 0 0.75rem;
+      font-size: clamp(1.5rem, 3.2vw, 2.35rem);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      line-height: 1.08;
+      max-width: 20ch;
+    }
+    .cover .sub {
+      font-size: 0.88rem;
+      color: var(--muted);
+      max-width: 52ch;
+      line-height: 1.5;
+      margin: 0;
+    }
+    .cover .sub + .sub { margin-top: 0.85rem; }
+    .chapter h1 {
+      margin: 0 0 0.35rem;
+      font-size: clamp(1.35rem, 2.8vw, 2rem);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .chapter .cities { font-size: 0.9rem; color: var(--muted); }
+    .chapter .rule {
+      width: 2.5rem;
+      height: 3px;
+      background: var(--rule);
+      margin-top: 1rem;
+    }
+    .mn {
+      background: var(--mn-bg);
+      border-left: 4px solid var(--mn-border);
+      padding: 0.75rem 1rem;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      color: #3d3a33;
+      margin-bottom: 0.85rem;
+    }
+    .mn span {
+      display: block;
+      font-weight: 700;
+      font-size: 0.58rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    .hotel-name {
+      margin: 0 0 0.5rem;
+      font-size: clamp(1.05rem, 2vw, 1.45rem);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      padding-bottom: 0.4rem;
+      border-bottom: 2px solid var(--rule);
+    }
+    .hotel-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 0.75rem 1rem;
+      flex: 1;
+      min-height: 0;
+    }
+    @media (max-aspect-ratio: 4/3) {
+      .hotel-grid { grid-template-columns: 1fr; }
+    }
+    .hotel-photos {
+      display: grid;
+      grid-template-rows: 1.4fr 1fr;
+      gap: 0.4rem;
+      min-height: 0;
+    }
+    .hotel-photos .main {
+      min-height: 0;
+    }
+    .hotel-photos .main img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .hotel-photos .pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+      min-height: 0;
+    }
+    .hotel-photos .pair img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      min-height: 72px;
+    }
+    .fact {
+      font-size: 0.78rem;
+      line-height: 1.42;
+      color: var(--text);
+    }
+    .fact strong { font-weight: 600; }
+    .programs {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+      line-height: 1.4;
+    }
+    .map-box {
+      margin-top: 0.5rem;
+      border: 1px solid var(--line);
+      background: #f6f6f6;
+      aspect-ratio: 16/10;
+      max-height: 38%;
+      min-height: 120px;
+    }
+    .map-box iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+    }
+    .cap {
+      font-size: 0.58rem;
+      color: #888;
+      margin-top: 0.25rem;
+    }
+    .contact {
+      font-size: 0.74rem;
+      margin-top: 0.35rem;
+    }
+    .contact a { color: var(--text); }
+    nav.toc { font-size: 0.85rem; }
+    nav.toc a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--line); }
+    nav.toc a:hover { border-color: var(--text); }
+    h2.toc-h {
+      font-size: 0.68rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin: 0 0 0.75rem;
+    }
+    .do ul { margin: 0.25rem 0 0; padding-left: 1.05rem; font-size: 0.82rem; line-height: 1.38; }
+    .do li { margin-bottom: 0.28rem; }
+    /*
+      Открывающий слайд направления (Рим и далее): три колонки в один ряд.
+      section.slide.slide-dir-overview > .dir-stack > .dir-block (×3)
+    */
+    .slide-dir-overview .dir-stack {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.55rem 0.65rem;
+      flex: 1;
+      min-height: 0;
+      margin-top: 0.45rem;
+      align-items: stretch;
+      overflow: hidden;
+    }
+    @media (max-width: 720px) {
+      .slide-dir-overview .dir-stack {
+        grid-template-columns: 1fr;
+        overflow: auto;
+      }
+    }
+    .slide-dir-overview .dir-block {
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--rule);
+      border-left: 1px solid var(--line);
+      padding: 0.5rem 0.55rem 0.55rem;
+      background: var(--paper);
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .slide-dir-overview .dir-block--accent {
+      border-top-color: var(--mn-border);
+    }
+    .slide-dir-overview .dir-sec-title {
+      margin: 0 0 0.5rem;
+      font-size: clamp(0.78rem, 1.35vw, 0.95rem);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text);
+      line-height: 1.2;
+      padding-bottom: 0.4rem;
+      border-bottom: 2px solid var(--rule);
+    }
+    .slide-dir-overview .dir-block p {
+      margin: 0;
+      font-size: 0.74rem;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+    .slide-dir-overview .dir-block .mn {
+      margin: 0;
+      font-size: 0.74rem;
+      line-height: 1.42;
+      border-left: 3px solid var(--mn-border);
+      padding: 0.65rem 0.75rem;
+      background: var(--mn-bg);
+    }
+    .slide-dir-overview .dir-source {
+      font-size: 0.55rem;
+      color: #888;
+      margin: 0.45rem 0 0;
+      line-height: 1.35;
+    }
+
+    .chapter-inner { max-width: 56rem; margin: 0; }
+    .slide.chapter > .chapter-inner {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 0.35rem 0 0;
+    }
+    .stub {
+      padding: 0.85rem 1rem;
+      border: 1px dashed var(--line);
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .stub strong { color: var(--text); }
+    .journal {
+      display: grid;
+      gap: 0.45rem 0.65rem;
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+    }
+    @media (max-aspect-ratio: 4/3) { .journal { grid-template-columns: 1fr; } }
+    .journal-wide { grid-column: 1 / -1; }
+    .slide-inner.journal { flex: 1; min-height: 0; overflow: auto; display: grid; }
+    .section-title {
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin: 0;
+      grid-column: 1 / -1;
+      color: var(--muted);
+    }
+    .lede { margin: 0; font-size: 0.78rem; line-height: 1.42; color: var(--text); }
+    .fig-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 0.35rem;
+      grid-column: 1 / -1;
+      min-height: 0;
+    }
+    @media (max-aspect-ratio: 4/3) { .fig-grid { grid-template-columns: 1fr; } }
+    .fig-grid .hero-img { grid-row: span 2; min-height: 100px; }
+    .fig-grid img { width: 100%; height: 100%; object-fit: cover; display: block; background: #eee; min-height: 80px; }
+    .fig-grid .stack { display: flex; flex-direction: column; gap: 0.35rem; }
+    .fig-grid .stack img { flex: 1; min-height: 60px; }
+    .hotel-slide .contact dt { font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-top: 0.35rem; }
+    .hotel-slide .contact dt:first-child { margin-top: 0; }
+    .hotel-slide .contact dd { margin: 0.1rem 0 0; font-size: 0.74rem; }
+    .slide-no-badge .slide-num { display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- Слайд 1 -->
+  <header class="slide cover" id="top">
+    <span class="slide-num" aria-label="Номер слайда"></span>
+    <div class="slide-inner">
+      <p class="kicker">Family office · Travel &amp; Lifestyle</p>
+      <h1>МН: Каталог впечатлений</h1>
+      <p class="sub">
+        Единая команда Family Office: процессы, логистика, время людей — бесшовный путь от запроса до исполнения
+      </p>
+      <p class="sub">
+        Для владельца крупного бизнеса это про доверие семьи и команды к travel. Личный опыт поездок для себя и близких — опора для роли
+        <strong>руководителя Travel &amp; Lifestyle</strong> в вашем <strong>Family office</strong>: меньше хаоса в запросах, ясные критерии и впечатления, которые превращаются в стандарты сервиса principals.
+      </p>
+    </div>
+  </header>
+
+  <!-- Слайд 2 -->
+  <section class="slide" id="toc">
+    <div class="slide-inner">
+      <div class="slide-header">
+        <div class="breadcrumbs">МН<span class="sep">›</span><a href="#top">Каталог впечатлений</a><span class="sep">›</span>Содержание</div>
+        <span class="slide-num"></span>
+      </div>
+      <h2 class="toc-h">Содержание</h2>
+      <nav class="toc">
+        <ul style="list-style:none;padding:0;columns:2;column-gap:2rem;margin:0;">
+          <li style="margin-bottom:0.35rem;"><a href="#italy">Италия</a> — <a href="#italy-rome">Рим</a> (готово), Комо и др.</li>
+          <li style="margin-bottom:0.35rem;"><a href="#france">Франция</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#spain">Испания</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#germany">Германия</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#austria">Австрия</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#peru">Перу</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#dominican">Доминиканская Республика</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#usa">США</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#poland">Польша</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#netherlands">Нидерланды</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#thailand">Таиланд</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#uae">ОАЭ</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#maldives">Мальдивы</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#uk">Великобритания</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#greece">Греция</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#israel">Израиль</a></li>
+          <li style="margin-bottom:0.35rem;"><a href="#armenia">Армения</a></li>
+        </ul>
+      </nav>
+    </div>
+  </section>
+
+
+  <!-- Слайд 3: Италия (направление) -->
+  <section class="slide chapter" id="italy">
+    <div class="slide-inner">
+      <div class="slide-header">
+        <div class="breadcrumbs">МН<span class="sep">›</span><a href="#top">Каталог впечатлений</a><span class="sep">›</span>Италия</div>
+        <span class="slide-num"></span>
+      </div>
+      <div class="chapter-inner">
+        <p class="kicker">Направление</p>
+        <h1>Италия</h1>
+        <p class="cities">Рим · Сардиния · Тоскана · Милан · озеро Комо</p>
+        <div class="rule"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Слайд 4: Италия · Рим — обзор. Шаблон: .slide-dir-overview + .dir-stack (3 колонки) + .dir-block -->
+  <section class="slide chapter slide-dir-overview" id="italy-rome">
+    <div class="slide-inner">
+      <div class="slide-header">
+        <div class="breadcrumbs">МН<span class="sep">›</span><a href="#top">Каталог впечатлений</a><span class="sep">›</span><a href="#italy">Италия</a><span class="sep">›</span>Рим</div>
+        <span class="slide-num"></span>
+      </div>
+      <p class="kicker">Направление · обзор</p>
+      <h1>Италия · Рим</h1>
+      <div class="dir-stack">
+        <div class="dir-block">
+          <h2 class="dir-sec-title">Что интересного</h2>
+          <p>
+            По преданию, Рим связан с легендой о Ромуле и Реме; традиционно отсчитывают историю города с VIII в. до н.э. С холмов (Палатин и др.) выросла столица царства, республики и империи; позже город стал центром папской власти и барочной застройки.
+            Исторический центр Рима входит в список Всемирного наследия ЮНЕСКО (периметр и состав зон уточнялись со временем). Его часто называют «Вечным городом» — слоями эпох на одном месте.
+          </p>
+          <p class="dir-source">Справка: обобщение по открытым материалам (в т. ч. описание объекта №91 в списке ЮНЕСКО и общедоступные очерки по истории Рима).</p>
+        </div>
+        <div class="dir-block">
+          <h2 class="dir-sec-title">Почему стоит поехать</h2>
+          <p>
+            За короткий маршрут — античные руины, ренессанс и барокко, музеи и базилики, гастрономия и сильная гостиничная школа. Удобно совмещать деловые «окна» и приватные туры: от Fiumicino / Ciampino — предсказуемые трансферы, внутри центра — пешком и с гидом.
+            Пополо, Боргезе, Ватикан, Трастевере и Испанская лестница остаются в радиусе коротких переходов или заранее забронированного авто.
+          </p>
+        </div>
+        <div class="dir-block dir-block--accent">
+          <h2 class="dir-sec-title">МН: впечатления</h2>
+          <aside class="mn">
+            Рим я люблю за многогранность: за один день здесь уживаются античность, барокко, шёпот узких переулков и шум площадей, запах кофе и смолы церквей, современная гастрономия и вечные виды с террас.
+            История для меня не музейная витрина, а слой под ногами — и именно поэтому вечный город бесценен как фон для остановок «на уровне»: когда отель держит дистанцию от шаблона и даёт дышать городу, не отрывая от комфорта.
+          </aside>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Слайд 5: отель (без впечатлений) -->
+  <section class="slide" id="hotel-derussie">
+    <div class="slide-inner">
+      <div class="slide-header">
+        <div class="breadcrumbs">
+          МН<span class="sep">›</span><a href="#top">Каталог впечатлений</a><span class="sep">›</span><a href="#italy">Италия</a><span class="sep">›</span><a href="#italy-rome">Рим</a><span class="sep">›</span><strong>Отель</strong>
+        </div>
+        <span class="slide-num"></span>
+      </div>
+
+      <h2 class="hotel-name">Hotel de Russie, a Rocco Forte Hotel</h2>
+
+      <div class="hotel-grid">
+        <div class="hotel-photos">
+          <div class="main">
+            <img src="https://www.roccofortehotels.com/media/52lbqsa2/1-rfh-hotel-de-russie-piazetta-valadier-008r3-mg-jul-2020.jpg" alt="Hotel de Russie — сад и отель" width="1280" height="720" loading="eager" decoding="async" referrerpolicy="no-referrer" />
+          </div>
+          <div class="pair">
+            <img src="https://www.roccofortehotels.com/media/ivubmnau/1-rfh-hotel-de-russie-piazetta-valadier-008r-mg-aug-21-jardin.jpg" alt="Secret Garden" width="640" height="400" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
+            <img src="https://www.roccofortehotels.com/media/dthixglu/rfh-hotel-de-russie-le-jardin-de-russie-7506-jg-nov-21.jpg" alt="Le Jardin de Russie" width="640" height="400" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
+          </div>
+          <p class="cap">Фото: официальный сайт Rocco Forte Hotels (roccofortehotels.com).</p>
+        </div>
+        <div>
+          <p class="fact">
+            <strong>Коротко об отеле.</strong> Между Пьяцца дель Пополо и Испанской лестницей, на Via del Babuino. Легендарный <em>Secret Garden</em> с террасами, водой и пиниями; ресторан <em>Le Jardin de Russie</em>, <em>Stravinskij Bar</em>, спа Irene Forte.
+            Поэт Жан Кокто в 1917 году называл отель «раем на земле» — формула до сих пор звучит в отзывах гостей: сочетание романской классики и космополитичности, любимое место у артистов и политиков, сильный аперитиво-бар и сад как «лёгкие лёгкие» в центре шума.
+          </p>
+          <p class="programs">
+            <strong>Программы (проверять на дату):</strong> Rocco Forte Hotels · American Express Fine Hotels + Resorts · уточнять LHW / Virtuoso / The Luxury Collection.
+          </p>
+          <dl class="contact" style="margin:0;">
+            <dt style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-top:0.4rem;">Сайт</dt>
+            <dd style="margin:0;"><a href="https://www.roccofortehotels.com/hotels-and-resorts/hotel-de-russie/">roccofortehotels.com</a></dd>
+            <dt style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-top:0.35rem;">Адрес</dt>
+            <dd style="margin:0;">Via del Babuino, 9, 00187 Roma RM, Italy</dd>
+            <dt style="font-size:0.58rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-top:0.35rem;">Телефон</dt>
+            <dd style="margin:0;"><a href="tel:+3906328881">+39 06 328 881</a></dd>
+          </dl>
+          <p style="font-size:0.65rem;color:var(--muted);margin:0.35rem 0 0;">Карта: положение отеля (OpenStreetMap).</p>
+          <div class="map-box">
+            <iframe title="Hotel de Russie на карте" loading="lazy"
+              src="https://www.openstreetmap.org/export/embed.html?bbox=12.472%2C41.902%2C12.492%2C41.914&amp;layer=mapnik&amp;marker=41.90815%2C12.48185"></iframe>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Слайд 6: впечатления -->
+  <section class="slide" id="rome-do">
+    <div class="slide-inner">
+      <div class="slide-header">
+        <div class="breadcrumbs">
+          МН<span class="sep">›</span><a href="#top">Каталог впечатлений</a><span class="sep">›</span><a href="#italy">Италия</a><span class="sep">›</span><a href="#italy-rome">Рим</a><span class="sep">›</span><strong>Впечатления</strong>
+        </div>
+        <span class="slide-num"></span>
+      </div>
+      <p class="kicker" style="margin-bottom:0.35rem;">Впечатления</p>
+      <aside class="mn">
+        <span>МН · впечатления</span>
+        Здесь — короткий список под приватные выезды и «окна» между встречами; детали тайминга и гидов допишите под principals.
+      </aside>
+      <div class="do">
+        <ul>
+          <li>Пьяцца дель Пополо, Вилла Боргезе — пешком от отеля; Ватикан и Трастевере — ранний вход или авто с гидом.</li>
+          <li>Гастро: Трастевере + брони в домах из гидов Michelin.</li>
+          <li>День вне города: Тиволи (Вилла д’Эсте) или Кастелли Романи.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Дальше: Италия (Комо) и остальные направления — как в первой версии каталога -->
+<section class="slide hotel-slide" id="italy-como">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    
+    <div class="slide-inner journal">
+      <p class="section-title">Где остановиться · озеро Комо</p>
+      <aside class="mn journal-wide"><span>МН · где остановиться</span>— Вилла vs отель; сторона озера; подъезд катером.</aside>
+      <h2 class="hotel-name">Passalacqua — Moltrasio (Como)</h2>
+      <div class="fig-grid journal-wide">
+        <div class="hero-img">
+          <img src="https://images.unsplash.com/photo-1582268611958-ebfd161ef9cf?w=1200" alt="Озеро, вилла" loading="lazy" />
+        </div>
+        <div class="stack">
+          <img src="https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?w=800" alt="Интерьер" loading="lazy" />
+          <img src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800" alt="Вид" loading="lazy" />
+        </div>
+        <p class="cap">Иллюстрации: Unsplash; для каталога FO замените на официальные кадры отеля.</p>
+      </div>
+      <p class="lede journal-wide">Вилла XVIII века на берегу Комо, мало номеров, максимум приватности. Идеален для «slow» недели и чартеров по озеру.</p>
+      <p class="programs journal-wide"><strong>Каталоги / программы:</strong> <strong>Relais &amp; Châteaux</strong>. Проверять пересечение с <strong>FHR</strong> / <strong>LHW</strong> по сезону.</p>
+      <dl class="contact journal-wide">
+        <dt>Сайт</dt>
+        <dd><a href="https://www.passalacqua.it/">passalacqua.it</a></dd>
+        <dt>Адрес</dt>
+        <dd>Via Besana, 59, 22010 Moltrasio CO, Italy</dd>
+        <dt>Телефон</dt>
+        <dd>+39 031 351 555</dd>
+      </dl>
+      <p class="section-title">Впечатления</p>
+      <aside class="mn journal-wide"><span>МН · впечатления</span></aside>
+      <div class="do journal-wide"><ul><li>Катер по озеру: Белладжо, Варенна, Вилла Карлотта.</li><li>Гольф и хайкинг в предгорьях; Милан — 45–60 мин.</li><li>Винодельни Valtellina на день.</li></ul></div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub"><strong>Италия — шаблон для следующих карточек:</strong> Сардиния (Коста Смеральда / Черво), Тоскана (кастелли и Chianti), Милан (Duomo / Brera). Для каждого отеля повторите блок: МН «где остановиться» → название → 2–3 фото → описание + <em>LHW · R&amp;C · FHR · Luxury Collection · Michelin</em> → сайт / адрес / телефон → МН «впечатления» → список активностей.</p></div></section>
+
+  <!-- ========== ФРАНЦИЯ ========== -->
+  <section class="slide chapter" id="france">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    
+    <div class="chapter-inner">
+      <p class="kicker">Направление</p>
+      <h1>Франция</h1>
+      <p class="cities">Париж · долина Луары · Борdeaux + Биарриц · Страна Басков · Юг (Сан-Тропе, Марсель, Ницца и деревни) · Межев</p>
+      <div class="rule"></div>
+    </div>
+  </section>
+
+  <section class="slide hotel-slide" id="france-paris">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    
+    <div class="slide-inner journal">
+      <p class="section-title">Где остановиться · Париж</p>
+      <aside class="mn journal-wide"><span>МН · где остановиться</span></aside>
+      <h2 class="hotel-name">Le Bristol Paris — Oetker Collection</h2>
+      <div class="fig-grid journal-wide">
+        <div class="hero-img"><img src="https://images.unsplash.com/photo-1502602898657-3e17560b8951?w=1200" alt="Париж" loading="lazy" /></div>
+        <div class="stack">
+          <img src="https://images.unsplash.com/photo-1496417263034-38ecadc0e805?w=800" alt="" loading="lazy" />
+          <img src="https://images.unsplash.com/photo-1445019980597-93fa8acb246c?w=800" alt="" loading="lazy" />
+        </div>
+        <p class="cap">Иллюстрации: Unsplash.</p>
+      </div>
+      <p class="lede journal-wide">Классический дворец на rue du Faubourg Saint-Honoré: сад на крыше, спа La Prairie, звёздный Epicure — удобная база для правого берега и Мараис.</p>
+      <p class="programs journal-wide"><strong>Каталоги / программы:</strong> <strong>Oetker Collection</strong>; пересечения с <strong>FHR</strong> / <strong>Virtuoso</strong> — проверять на дату. Ресторан <strong>Epicure</strong> — внимание к гиду <strong>Michelin</strong>.</p>
+      <dl class="contact journal-wide">
+        <dt>Сайт</dt>
+        <dd><a href="https://www.lebristolparis.com/">lebristolparis.com</a></dd>
+        <dt>Адрес</dt>
+        <dd>112 Rue du Faubourg Saint-Honoré, 75008 Paris, France</dd>
+        <dt>Телефон</dt>
+        <dd>+33 1 53 43 43 00</dd>
+      </dl>
+      <p class="section-title">Впечатления</p>
+      <aside class="mn journal-wide"><span>МН · впечатления</span></aside>
+      <div class="do journal-wide"><ul><li>Лувр / Орсе с приватом; Маре и галереи.</li><li>Версаль или Шантийи на день.</li><li>Винные бары, звёздные ужины по Michelin.</li></ul></div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub"><strong>Франция — продолжение каталога:</strong> Луара (шато-отели), Атлантика (Бордо, Биарриц, баскский берег), Лазурный берег и Прованс, Межев (альпийский шале-люкс). Для каждого объекта — полный блок полей + МН.</p></div></section>
+
+  <!-- ========== ИСПАНИЯ ========== -->
+  <section class="slide chapter" id="spain">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Испания</h1><p class="cities">Барселона · Валенсия · Севилья · Ибица · Майорка</p><div class="rule"></div></div></section>
+  <section class="slide hotel-slide" id="spain-seville">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    
+    <div class="slide-inner journal">
+      <p class="section-title">Где остановиться · Севилья</p>
+      <aside class="mn journal-wide"><span>МН · где остановиться</span></aside>
+      <h2 class="hotel-name">Hotel Alfonso XIII — Seville</h2>
+      <div class="fig-grid journal-wide">
+        <div class="hero-img"><img src="https://images.unsplash.com/photo-1566073771259-6a8505949a17?w=1200" alt="Отель, бассейн" loading="lazy" /></div>
+        <div class="stack">
+          <img src="https://images.unsplash.com/photo-1571896349842-33c89424de2d?w=800" alt="" loading="lazy" />
+          <img src="https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?w=800" alt="" loading="lazy" />
+        </div>
+        <p class="cap">Иллюстрации: Unsplash.</p>
+      </div>
+      <p class="lede journal-wide">Иконический неомудехар у Парка Марии Луисы и центра — удобно к Алькасару и собору.</p>
+      <p class="programs journal-wide"><strong>Каталоги / программы:</strong> <strong>The Luxury Collection</strong> (Marriott). Проверять <strong>FHR</strong> / <strong>LHW</strong> на дату.</p>
+      <dl class="contact journal-wide">
+        <dt>Сайт</dt>
+        <dd><a href="https://www.marriott.com/en-us/hotels/svqlc-hotel-alfonso-xiii-a-luxury-collection-hotel-seville/overview/">marriott.com — Luxury Collection</a></dd>
+        <dt>Адрес</dt>
+        <dd>San Fernando, 2, 41004 Sevilla, Spain</dd>
+        <dt>Телефон</dt>
+        <dd>+34 954 50 10 00</dd>
+      </dl>
+      <p class="section-title">Впечатления</p>
+      <aside class="mn journal-wide"><span>МН · впечатления</span></aside>
+      <div class="do journal-wide"><ul><li>Конный завод Реал Маэстранса; фламенко приват.</li><li>День в Кордове или Ронде.</li><li>Шери и тапас-тур.</li></ul></div>
+    </div>
+  </section>
+
+  <!-- ========== КОРОТКИЕ ОБЛОЖКИ + STUB ДЛЯ ОСТАЛЬНЫХ ========== -->
+  <section class="slide chapter" id="germany">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Германия</h1><p class="cities">Берлин · Мюнхен</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Добавьте карточки 5★ (например, Adlon Kempinski Berlin, Bayerischer Hof Munich) с блоками <strong>Где остановиться (МН)</strong>, фото, программами LHW / R&amp;C / FHR / Luxury Collection / Michelin, контактами и <strong>Впечатления (МН)</strong>.</p></div></section>
+
+  <section class="slide chapter" id="austria">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Австрия</h1><p class="cities">Зальцбург · Китсбюэль · Ишгль и др.</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Зальцбург (старинные дворцы-отели), Китсбюэль и Левый Циллерталь (горнолыжные люкс), Ишгль après-ski. Шаблон карточки — как выше.</p></div></section>
+
+  <section class="slide chapter" id="peru">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Перу</h1><p class="cities">Лима · Мачу-Пикчу · Писко (острова Балестас) · джунгли Амазонки</p><div class="rule"></div></div></section>
+  <section class="slide hotel-slide" id="peru-lima">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    
+    <div class="slide-inner journal">
+      <p class="section-title">Где остановиться · Лима</p>
+      <aside class="mn journal-wide"><span>МН · где остановиться</span></aside>
+      <h2 class="hotel-name">Hotel B — Barranco, Lima</h2>
+      <div class="fig-grid journal-wide">
+        <div class="hero-img"><img src="https://images.unsplash.com/photo-1566073771259-6a8505949a17?w=1200" alt="" loading="lazy" /></div>
+        <div class="stack">
+          <img src="https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=800" alt="" loading="lazy" />
+          <img src="https://images.unsplash.com/photo-1439066615861-d1af74d74000?w=800" alt="" loading="lazy" />
+        </div>
+        <p class="cap">Иллюстрации: Unsplash.</p>
+      </div>
+      <p class="lede journal-wide">Бутик в арт-квартале Барранко: галереи, океан рядом, контраст с Мирафлорес.</p>
+      <p class="programs journal-wide"><strong>Каталоги / программы:</strong> малый независимый дом; проверять <strong>Leading Hotels of the World</strong> / <strong>Relais &amp; Châteaux</strong> по факту партнёрств; <strong>Michelin</strong> — рестораны района.</p>
+      <dl class="contact journal-wide">
+        <dt>Сайт</dt>
+        <dd><a href="https://www.hotelb.pe/">hotelb.pe</a></dd>
+        <dt>Адрес</dt>
+        <dd>Av. Saenz Peña 204, Barranco 15063, Peru</dd>
+        <dt>Телефон</dt>
+        <dd>+51 1 206 8000</dd>
+      </dl>
+      <p class="section-title">Впечатления</p>
+      <aside class="mn journal-wide"><span>МН · впечатления</span></aside>
+      <div class="do journal-wide"><ul><li>Мачу-Пикчу: поезд Vistadome / Hiram Bingham + ночёвки в Священной долине.</li><li>Паракас / острова Балестас из Писко.</li><li>Амазонка: лоджи Iquitos / Tambopata — отдельный маршрут.</li></ul></div>
+    </div>
+  </section>
+
+  <section class="slide chapter" id="dominican">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Доминиканская Республика</h1><p class="cities">Пунта-Кана · Ла-Романа · Самана́</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Курортные 5★ (Eden Roc Cap Cana, Tortuga Bay и др.): заполните карточки; для FHR / Marriott Luxury часто встречаются пакеты в Punta Cana.</p></div></section>
+
+  <section class="slide chapter" id="usa">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>США</h1><p class="cities">Лос-Анджелес · Нью-Йорк · Чикаго</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Нью-Йорк: The Carlyle, Aman New York и др.; LA: Beverly Hills Hotel; Chicago: The Peninsula — для каждого указать FHR / LHW / Forbes и рестораны Michelin рядом.</p></div></section>
+
+  <section class="slide chapter" id="poland">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Польша</h1><p class="cities">Варшава</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Raffles Europejski и другие 5★ центра — карточки по шаблону.</p></div></section>
+
+  <section class="slide chapter" id="netherlands">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Нидерланды</h1><p class="cities">Амстердам</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">De L’Europe Amsterdam, Pulitzer и др.; программы и Michelin — по объекту.</p></div></section>
+
+  <section class="slide chapter" id="thailand">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Таиланд</h1><p class="cities">острова — Пхукет, Самуи, Пхи-Пхи, ко Ланта и др.</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Amanpuri, Six Senses Samui, Four Seasons и др.: для островов важны трансферы вертолёт/ speedboat и сезон муссонов — вынести в МН.</p></div></section>
+
+  <section class="slide chapter" id="uae">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>ОАЭ</h1><p class="cities">Дубай · Абу-Даби</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Burj Al Arab, One&amp;Only The Palm, Emirates Palace и др.; FHR / Virtuoso / Marriott ST — уточнять по бронированию.</p></div></section>
+
+  <section class="slide chapter" id="maldives">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Мальдивы</h1><p class="cities">атоллы и приватные острова</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Soneva, Cheval Blanc Randheli, Patina и др.: водный аэропорт, питание AI / HB, дайвинг — блоки МН + программы сетей.</p></div></section>
+
+  <section class="slide chapter" id="uk">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Великобритания</h1><p class="cities">Лондон · Шотландия — Эдинбург</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Claridge’s, The Gleneagles и др.; R&amp;C и Michelin — сильная повестка для Шотландии.</p></div></section>
+
+  <section class="slide chapter" id="greece">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Греция</h1><p class="cities">Афины · Миконос</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Four Seasons Astir Palace Athens, Belvedere Mykonos и др.; острова — виллы и клубные отели.</p></div></section>
+
+  <section class="slide chapter" id="israel">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Израиль</h1><p class="cities">Тель-Авив</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">The Jaffa, Norman Tel Aviv и др.; гастро и пляжи — в МН «впечатления».</p></div></section>
+
+  <section class="slide chapter" id="armenia">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="chapter-inner"><p class="kicker">Направление</p><h1>Армения</h1><p class="cities">Ереван</p><div class="rule"></div></div></section>
+  <section class="slide">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner"><p class="stub">Alexander, Armenia Marriott Hotel Yerevan и бутики; развивать каталог с локальными консьержами.</p></div></section>
+
+  <footer class="slide" id="end" style="border:none;background:var(--paper);">
+    <span class="slide-num" style="position:absolute;top:1rem;right:1.65rem;z-index:2;"></span>
+    <div class="slide-inner">
+      <p class="kicker">Конец подборки</p>
+      <p style="font-size:0.82rem;color:var(--muted);max-width:52ch;line-height:1.45;">Рим — эталон формата слайдов (крошки, МН, отель, карта, впечатления). Остальные направления ниже — черновики и заготовки; карточки городов и отелей дополним по мере готовности.</p>
+      <p style="font-size:0.82rem;margin-top:0.75rem;"><a href="#top">Наверх ↑</a></p>
+    </div>
+  </footer>
+
+
+  <script>
+    (function () {
+      var slides = document.querySelectorAll(".slide:not(.slide-no-badge)");
+      var total = slides.length;
+      slides.forEach(function (el, i) {
+        var nums = el.querySelectorAll(".slide-num");
+        var label = (i + 1) + " / " + total;
+        nums.forEach(function (n) { n.textContent = label; });
+      });
+    })();
+  </script>
+</body>
+</html>
