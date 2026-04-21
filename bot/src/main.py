@@ -1,10 +1,14 @@
 import asyncio
 import html
+import json
 import logging
 import os
 import secrets
 import time
-from typing import Optional, Dict, Any
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Optional, Dict, Any, List
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -43,6 +47,10 @@ BOT_USERNAME: Optional[str] = None
 # In-memory storage for manual testing (will reset on restart).
 # event_code -> event dict
 EVENTS: Dict[str, Dict[str, Any]] = {}
+EVENTS_FILE = (Path(__file__).resolve().parent.parent / "data" / "events.json")
+PROMPTS_DIR = (Path(__file__).resolve().parent.parent / "prompts")
+BRIEF_PARSER_PROMPT_FILE = (PROMPTS_DIR / "brief_parser_system_prompt.md")
+_BRIEF_PARSER_PROMPT_CACHE: Optional[str] = None
 
 
 def new_event_code() -> str:
@@ -54,7 +62,132 @@ def now_ts() -> int:
     return int(time.time())
 
 
-def extract_brief_from_text(text: str) -> Dict[str, Any]:
+def get_brief_parser_prompt() -> str:
+    global _BRIEF_PARSER_PROMPT_CACHE
+    if _BRIEF_PARSER_PROMPT_CACHE is not None:
+        return _BRIEF_PARSER_PROMPT_CACHE
+    try:
+        _BRIEF_PARSER_PROMPT_CACHE = BRIEF_PARSER_PROMPT_FILE.read_text(encoding="utf-8")
+    except Exception as err:
+        logging.warning("Failed to load brief parser prompt: %s", err)
+        _BRIEF_PARSER_PROMPT_CACHE = ""
+    return _BRIEF_PARSER_PROMPT_CACHE
+
+
+def parse_brief_with_llm(text: str) -> Dict[str, Any]:
+    enabled = (os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true")
+    api_key = os.getenv("LLM_API_KEY")
+    if not enabled or not api_key:
+        return {}
+
+    prompt = get_brief_parser_prompt()
+    if not prompt:
+        return {}
+
+    model = os.getenv("LLM_PARSER_MODEL", "gpt-4o-mini")
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (text or "").strip()},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8")
+        parsed = json.loads(raw)
+        content = parsed["choices"][0]["message"]["content"]
+        if not content:
+            return {}
+        result = json.loads(content)
+        if isinstance(result, dict):
+            return result
+        return {}
+    except (urllib.error.URLError, urllib.error.HTTPError, KeyError, ValueError, TimeoutError) as err:
+        logging.warning("LLM brief parser unavailable, fallback to rule-based parser: %s", err)
+        return {}
+
+
+def load_events() -> None:
+    global EVENTS
+    try:
+        if not EVENTS_FILE.exists():
+            EVENTS = {}
+            return
+        raw = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
+        loaded: Dict[str, Dict[str, Any]] = {}
+        for code, event in raw.items():
+            row = dict(event or {})
+            participants = row.get("participants") or {}
+            # Backward compatibility for old storage where participants was a list/set.
+            if isinstance(participants, list):
+                participants = {
+                    str(chat_id): {"role": "participant", "joined_at": row.get("created_at")}
+                    for chat_id in participants
+                }
+            row["participants"] = participants
+            loaded[code] = row
+        EVENTS = loaded
+    except Exception as err:
+        logging.warning("Failed to load events from disk: %s", err)
+        EVENTS = {}
+
+
+def save_events() -> None:
+    try:
+        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        EVENTS_FILE.write_text(
+            json.dumps(EVENTS, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as err:
+        logging.warning("Failed to save events to disk: %s", err)
+
+
+def normalize_text(value: str) -> str:
+    text = (value or "").strip().lower()
+    for token in ["ℹ️", "ℹ", "🆘", "➕", "✨"]:
+        text = text.replace(token, "")
+    return " ".join(text.split())
+
+
+def is_capabilities_text(value: str) -> bool:
+    return normalize_text(value) == "что умеет бот"
+
+
+def is_help_text(value: str) -> bool:
+    return normalize_text(value) == "помощь"
+
+
+def is_my_events_text(value: str) -> bool:
+    return normalize_text(value) == "мои события"
+
+
+async def handle_menu_shortcuts(message: Message) -> bool:
+    if is_my_events_text(message.text or ""):
+        await my_events_handler(message, None)
+        return True
+    if is_capabilities_text(message.text or ""):
+        await capabilities_handler(message)
+        return True
+    if is_help_text(message.text or ""):
+        await help_handler(message)
+        return True
+    return False
+
+
+def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     t = (text or "").lower()
     brief: Dict[str, Any] = {}
     # Raw context can be useful internally for debugging, but we should not echo it back to the user.
@@ -236,6 +369,14 @@ def extract_brief_from_text(text: str) -> Dict[str, Any]:
         brief["activity_preferences"] = activity_preferences
 
     return brief
+
+
+def extract_brief_from_text(text: str) -> Dict[str, Any]:
+    # Keep deterministic parser as baseline and optionally enrich via LLM parser.
+    # If LLM parser is unavailable, behavior stays unchanged.
+    rule_based = extract_brief_rule_based(text)
+    llm_brief = parse_brief_with_llm(text)
+    return merge_brief(llm_brief, rule_based)
 
 
 def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -515,7 +656,7 @@ def participant_confirm_keyboard() -> InlineKeyboardMarkup:
 def welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Создать событие", callback_data="event:create")],
+            [InlineKeyboardButton(text="✨ Создать событие", callback_data="event:create")],
         ]
     )
 
@@ -523,7 +664,7 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 def organizer_next_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Создать событие", callback_data="event:create")],
+            [InlineKeyboardButton(text="✨ Создать событие", callback_data="event:create")],
         ]
     )
 
@@ -536,11 +677,27 @@ def invite_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def my_events_keyboard(events: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    rows = []
+    for item in events[:10]:
+        role_icon = "👑" if item["role"] == "organizer" else "👤"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{role_icon} {item['code']} · {item['title']}",
+                    callback_data=f"event:open:{item['code']}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     # Простое меню (не inline), чтобы всегда было под рукой.
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Создать событие")],
+            [KeyboardButton(text="✨ Создать событие")],
+            [KeyboardButton(text="📂 Мои события")],
             [KeyboardButton(text="ℹ️ Что умеет бот"), KeyboardButton(text="🆘 Помощь")],
         ],
         resize_keyboard=True,
@@ -567,7 +724,7 @@ async def help_handler(message: Message) -> None:
     logging.info("Received /help from chat_id=%s", message.chat.id)
     await message.answer(
         "Кнопки в меню:\n"
-        "— ➕ Создать событие\n"
+        "— ✨ Создать событие\n"
         "— ℹ️ Что умеет бот\n"
         "— 🆘 Помощь\n\n"
         "Если меню не видно, напишите /start."
@@ -586,6 +743,46 @@ async def capabilities_handler(message: Message) -> None:
     )
 
 
+async def my_events_handler(message: Message, state: Optional[FSMContext]) -> None:
+    chat_id = message.chat.id
+    items: List[Dict[str, Any]] = []
+    for code, event in EVENTS.items():
+        participants = event.get("participants") or {}
+        if event.get("organizer_chat_id") == chat_id:
+            items.append(
+                {
+                    "code": code,
+                    "role": "organizer",
+                    "title": "организатор",
+                    "updated_at": event.get("created_at", 0),
+                }
+            )
+        elif str(chat_id) in participants:
+            items.append(
+                {
+                    "code": code,
+                    "role": "participant",
+                    "title": "участник",
+                    "updated_at": participants[str(chat_id)].get("updated_at", event.get("created_at", 0)),
+                }
+            )
+
+    if not items:
+        await message.answer(
+            "У вас пока нет сохранённых событий.\n"
+            "Создайте новое событие кнопкой «✨ Создать событие».",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    items.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+    await message.answer(
+        "📂 <b>Мои события</b>\n"
+        "Выберите событие, чтобы вернуться к нему:",
+        reply_markup=my_events_keyboard(items),
+    )
+
+
 async def new_event_handler(message: Message, state: FSMContext) -> None:
     logging.info("New event requested by chat_id=%s", message.chat.id)
     await state.update_data(organizer_chat_id=message.chat.id)
@@ -596,7 +793,7 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         "created_at": now_ts(),
         "organizer_chat_id": message.chat.id,
         "organizer_dump": None,
-        "participants": set(),
+        "participants": {},
         "invite_link": None,
     }
     await state.update_data(event_code=event_code)
@@ -607,6 +804,7 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         invite_link = None
 
     EVENTS[event_code]["invite_link"] = invite_link
+    save_events()
 
     invite_text = (
         f"\n\nСсылка для участников:\n{invite_link}"
@@ -651,6 +849,49 @@ async def event_create_callback_handler(callback: CallbackQuery, state: FSMConte
     logging.info("Event create clicked chat_id=%s", callback.message.chat.id)
     await callback.answer()
     await new_event_handler(callback.message, state)
+
+
+async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = callback.data or ""
+    event_code = data.removeprefix("event:open:")
+    event = EVENTS.get(event_code)
+    if not event:
+        await callback.message.answer("Событие не найдено. Возможно, оно было удалено.")
+        return
+
+    chat_id = callback.message.chat.id
+    participants = event.get("participants") or {}
+    is_organizer = event.get("organizer_chat_id") == chat_id
+    is_participant = str(chat_id) in participants
+
+    if not is_organizer and not is_participant:
+        await callback.message.answer("У вас нет доступа к этому событию.")
+        return
+
+    brief = event.get("brief") or {}
+    if is_organizer:
+        await state.update_data(role="organizer", event_code=event_code, brief=brief)
+        await state.set_state(FlowState.organizer_clarify)
+        await callback.message.answer(
+            f"👑 Вы вернулись в событие <b>{html.escape(event_code)}</b> как организатор.\n\n"
+            f"{format_brief_update_message(brief)}\n\n"
+            "Можно продолжить уточнения одним сообщением.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    participant_name = (
+        callback.from_user.full_name if callback.from_user else str(chat_id)
+    )
+    await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
+    await state.set_state(FlowState.participant_contribute)
+    await callback.message.answer(
+        f"👤 Вы вернулись в событие <b>{html.escape(event_code)}</b> как участник.\n\n"
+        f"{format_brief_for_participant(brief)}\n\n"
+        "Напишите одним сообщением, что хотите дополнить.",
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 async def event_invite_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -702,7 +943,14 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
         )
         return
 
-    event["participants"].add(message.chat.id)
+    participants = event.setdefault("participants", {})
+    participants[str(message.chat.id)] = {
+        "role": "participant",
+        "name": (message.from_user.full_name if message.from_user else str(message.chat.id)),
+        "username": (message.from_user.username if message.from_user else None),
+        "joined_at": now_ts(),
+    }
+    save_events()
     event_brief = event.get("brief") or {}
     participant_name = (
         message.from_user.full_name
@@ -729,6 +977,9 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
 
 
 async def participant_contribute_handler(message: Message, state: FSMContext) -> None:
+    if await handle_menu_shortcuts(message):
+        return
+
     data = await state.get_data()
     event_code = data.get("event_code")
     if not event_code or event_code not in EVENTS:
@@ -752,6 +1003,10 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         "username": (message.from_user.username if message.from_user else None),
         "updated_at": now_ts(),
     }
+    participants = event.setdefault("participants", {})
+    if str(message.chat.id) in participants:
+        participants[str(message.chat.id)]["updated_at"] = now_ts()
+    save_events()
 
     await state.set_state(FlowState.participant_confirm)
     await message.answer(
@@ -775,6 +1030,11 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
     update_row = updates.setdefault(callback.message.chat.id, {})
     update_row["confirmed"] = True
     update_row["confirmed_at"] = now_ts()
+    participants = event.setdefault("participants", {})
+    if str(callback.message.chat.id) in participants:
+        participants[str(callback.message.chat.id)]["confirmed"] = True
+        participants[str(callback.message.chat.id)]["confirmed_at"] = now_ts()
+    save_events()
 
     participant_name = data.get("participant_name") or (
         callback.from_user.full_name if callback.from_user else str(callback.message.chat.id)
@@ -806,6 +1066,8 @@ async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMC
 
 async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
     try:
+        if await handle_menu_shortcuts(message):
+            return
         logging.info("Organizer dump received chat_id=%s", message.chat.id)
         data = await state.get_data()
         event_code = data.get("event_code")
@@ -821,6 +1083,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["organizer_dump"] = text
             EVENTS[event_code]["brief"] = brief
+            save_events()
 
         await state.update_data(organizer_dump=text, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
@@ -856,6 +1119,8 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
 
 async def organizer_clarify_handler(message: Message, state: FSMContext) -> None:
     try:
+        if await handle_menu_shortcuts(message):
+            return
         # Any follow-up message in clarify state merges into brief and asks only remaining missing fields
         data = await state.get_data()
         event_code = data.get("event_code")
@@ -866,6 +1131,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["brief"] = brief
+            save_events()
 
         await state.update_data(brief=brief)
 
@@ -896,14 +1162,17 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
 async def text_fallback_handler(message: Message) -> None:
     logging.info("Received text from chat_id=%s: %s", message.chat.id, message.text)
-    normalized = (message.text or "").strip().lower()
-    if normalized in {"начать", "/start"}:
+    normalized = normalize_text(message.text or "")
+    if normalized in {"начать", "start", "/start"}:
         await start_handler(message, None)
         return
-    if message.text == "ℹ️ Что умеет бот":
+    if is_my_events_text(message.text or ""):
+        await my_events_handler(message, None)
+        return
+    if is_capabilities_text(message.text or ""):
         await capabilities_handler(message)
         return
-    if message.text == "🆘 Помощь":
+    if is_help_text(message.text or ""):
         await help_handler(message)
         return
     await message.answer("Выберите действие в меню.", reply_markup=main_menu_keyboard())
@@ -911,6 +1180,7 @@ async def text_fallback_handler(message: Message) -> None:
 
 async def main() -> None:
     load_dotenv()
+    load_events()
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Missing BOT_TOKEN in environment")
@@ -922,9 +1192,10 @@ async def main() -> None:
     dp.message.register(start_payload_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
     dp.message.register(new_event_handler, Command("new"))
-    dp.message.register(new_event_handler, F.text == "➕ Создать событие")
-    dp.message.register(capabilities_handler, F.text == "ℹ️ Что умеет бот")
-    dp.message.register(help_handler, F.text == "🆘 Помощь")
+    dp.message.register(new_event_handler, F.text == "✨ Создать событие")
+    dp.message.register(my_events_handler, F.text.func(is_my_events_text))
+    dp.message.register(capabilities_handler, F.text.func(is_capabilities_text))
+    dp.message.register(help_handler, F.text.func(is_help_text))
     dp.message.register(participant_contribute_handler, FlowState.participant_contribute, F.text)
     dp.message.register(organizer_dump_handler, FlowState.organizer_dump, F.text)
     dp.message.register(organizer_clarify_handler, FlowState.organizer_clarify, F.text)
@@ -932,6 +1203,7 @@ async def main() -> None:
 
     dp.callback_query.register(role_callback_handler, F.data.startswith("role:"))
     dp.callback_query.register(event_create_callback_handler, F.data == "event:create")
+    dp.callback_query.register(event_open_callback_handler, F.data.startswith("event:open:"))
     dp.callback_query.register(event_invite_callback_handler, F.data == "event:invite")
     dp.callback_query.register(participant_confirm_callback_handler, F.data == "participant:confirm")
     dp.callback_query.register(participant_edit_callback_handler, F.data == "participant:edit")
