@@ -35,6 +35,8 @@ def setup_logging() -> None:
 class FlowState(StatesGroup):
     organizer_dump = State()
     organizer_clarify = State()
+    participant_contribute = State()
+    participant_confirm = State()
 
 BOT_USERNAME: Optional[str] = None
 
@@ -61,10 +63,39 @@ def extract_brief_from_text(text: str) -> Dict[str, Any]:
     # Budget: "до 250к", "250 000", "250тыс"
     import re
 
-    m = re.search(r"(?:до|бюджет(?:ом)?\s*(?:до)?)\s*(\d[\d\s]{1,8})\s*(к|тыс|тысяч|000)?", t)
-    if m:
-        num = int(re.sub(r"\s+", "", m.group(1)))
-        if m.group(2) in {"к", "тыс", "тысяч"}:
+    budget_value = None
+    budget_suffix = ""
+
+    # Case A: explicit budget mention.
+    m_budget = re.search(
+        r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
+        t,
+    )
+    if m_budget:
+        budget_value = int(re.sub(r"\s+", "", m_budget.group(1)))
+        budget_suffix = (m_budget.group(2) or "").strip()
+    else:
+        # Case B: monetary phrase without word "бюджет", but with explicit money marker.
+        m_money = re.search(
+            r"до\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)",
+            t,
+        )
+        if m_money:
+            budget_value = int(re.sub(r"\s+", "", m_money.group(1)))
+            budget_suffix = (m_money.group(2) or "").strip()
+
+    if budget_value is not None:
+        num = budget_value
+        suffix = budget_suffix
+        if suffix in {"к", "т", "тыс", "тысяч"}:
+            num *= 1000
+        elif suffix.startswith("млн") or suffix.startswith("миллион"):
+            num *= 1_000_000
+        elif suffix in {"руб", "₽", "000"}:
+            # already in rubles / thousands encoded
+            pass
+        elif not suffix and num <= 1000:
+            # For travel chats, "бюджет 250" is usually shorthand for 250k.
             num *= 1000
         brief["budget_rub_max"] = num
 
@@ -188,6 +219,22 @@ def extract_brief_from_text(text: str) -> Dict[str, Any]:
     if "all inclusive" in t or "оллинклюзив" in t or "всё включено" in t:
         brief["trip_type"] = "всё включено"
 
+    # Specific activity/place preferences often mentioned by participants.
+    activity_preferences = []
+    if "песчан" in t and ("пляж" in t or "море" in t):
+        activity_preferences.append("песчаный пляж")
+    if "достопримеч" in t or "экскурс" in t:
+        activity_preferences.append("поездки к достопримечательностям")
+    if (
+        ("машин" in t or "авто" in t or "на машине" in t)
+        and ("достопримеч" in t or "экскурс" in t or "посмотреть" in t or "покат" in t)
+    ):
+        activity_preferences.append("поездки на машине к достопримечательностям")
+    if "ресторан" in t or "гастроном" in t or "кафе" in t:
+        activity_preferences.append("рестораны и локальная еда")
+    if activity_preferences:
+        brief["activity_preferences"] = activity_preferences
+
     return brief
 
 
@@ -202,7 +249,7 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                 if item not in out["months"]:
                     out["months"].append(item)
             continue
-        if k in {"visa_notes", "constraints_notes"}:
+        if k in {"visa_notes", "constraints_notes", "activity_preferences"}:
             out.setdefault(k, [])
             for item in v:
                 if item not in out[k]:
@@ -215,6 +262,48 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                     out[k].append(item)
             continue
         out[k] = v
+    return out
+
+
+def merge_participant_into_brief(
+    base: Dict[str, Any],
+    incoming: Dict[str, Any],
+    participant_name: str,
+) -> Dict[str, Any]:
+    # Participant input should enrich the event brief, but should not blindly overwrite
+    # organizer's already fixed core fields (especially budget and trip composition).
+    out = dict(base or {})
+    immutable_if_set = {
+        "budget_rub_max",
+        "adults",
+        "kids_count",
+        "kid_age",
+        "months",
+        "date_range_raw",
+        "flight_hours_max",
+        "visa_required",
+        "visa_status",
+        "passports_status",
+        "climate",
+        "trip_type",
+    }
+
+    for k, v in (incoming or {}).items():
+        if v is None:
+            continue
+        if k in {"months", "visa_notes", "constraints_notes", "passports_notes", "activity_preferences"}:
+            out.setdefault(k, [])
+            for item in v:
+                if item not in out[k]:
+                    out[k].append(item)
+            continue
+        if k in immutable_if_set and k in out and out.get(k):
+            continue
+        out[k] = v
+
+    # Keep participant-specific preference visible without rewriting organizer base fields.
+    out.setdefault("participant_preferences", {})
+    out["participant_preferences"][participant_name] = incoming
     return out
 
 
@@ -306,12 +395,121 @@ def format_brief_update_message(brief: Dict[str, Any]) -> str:
         facts.append("🌤 <b>Климат:</b> " + esc(brief["climate"]))
     if brief.get("trip_type"):
         facts.append("🏝 <b>Тип отдыха:</b> " + esc(brief["trip_type"]))
+    if brief.get("activity_preferences"):
+        facts.append("🧩 <b>Дополнительные пожелания:</b> " + ", ".join(esc(item) for item in brief["activity_preferences"]))
 
     if facts:
         lines.append("\n📌 <b>Что уже известно</b>")
         lines.extend([f"• {f}" for f in facts])
 
     return "\n".join(lines)
+
+
+def format_brief_for_participant(brief: Dict[str, Any]) -> str:
+    def esc(value: Any) -> str:
+        return html.escape(str(value))
+
+    def humanize_climate(value: str) -> str:
+        mapping = {
+            "море/пляж": "морское направление и пляжный отдых",
+            "горы": "горное направление",
+        }
+        return mapping.get(value, value)
+
+    lines: list[str] = []
+    lines.append("📌 <b>Что уже зафиксировано по событию</b>")
+
+    def format_kids(count: int) -> str:
+        # 1 ребенок, 2 ребенка, 5 детей
+        n = abs(count) % 100
+        n1 = n % 10
+        if 11 <= n <= 14:
+            word = "детей"
+        elif n1 == 1:
+            word = "ребенок"
+        elif 2 <= n1 <= 4:
+            word = "ребенка"
+        else:
+            word = "детей"
+        return f"{count} {word}"
+
+    core_facts: list[str] = []
+    style_facts: list[str] = []
+    if brief.get("date_range_raw"):
+        core_facts.append(f"📅 <b>Даты:</b> <code>{esc(brief['date_range_raw'])}</code>")
+    elif brief.get("months"):
+        core_facts.append("📅 <b>Примерные даты:</b> " + ", ".join(esc(item) for item in brief["months"]))
+    if brief.get("budget_rub_max"):
+        core_facts.append(f"💰 <b>Бюджет:</b> до {brief['budget_rub_max']:,} ₽".replace(",", " "))
+    if brief.get("adults") or brief.get("kids_count"):
+        parts: list[str] = []
+        if brief.get("adults"):
+            parts.append(f"{brief['adults']} взрослых")
+        if brief.get("kids_count"):
+            parts.append(format_kids(int(brief["kids_count"])))
+        core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + ", ".join(parts))
+    if brief.get("flight_hours_max"):
+        core_facts.append(f"✈️ <b>Перелёт:</b> до {esc(brief['flight_hours_max'])} ч.")
+    if "visa_required" in brief:
+        core_facts.append("🛂 <b>Визы:</b> " + ("нужна" if brief["visa_required"] else "без визы"))
+    if brief.get("passports_status"):
+        core_facts.append("🛃 <b>Загранпаспорта:</b> " + esc(brief["passports_status"]))
+    if brief.get("climate"):
+        style_facts.append("🌤 <b>Климат и локация:</b> " + esc(humanize_climate(brief["climate"])))
+    if brief.get("trip_type"):
+        style_facts.append("🏝 <b>Формат отдыха:</b> " + esc(brief["trip_type"]))
+    if brief.get("activity_preferences"):
+        style_facts.append("🧩 <b>Дополнительные пожелания:</b> " + ", ".join(esc(item) for item in brief["activity_preferences"]))
+
+    if core_facts:
+        lines.append("\n🧱 <b>Базовые параметры поездки</b>")
+        lines.extend([f"• {f}" for f in core_facts])
+    if style_facts:
+        lines.append("\n🎯 <b>Пожелания по формату поездки</b>")
+        lines.extend([f"• {f}" for f in style_facts])
+    if not core_facts and not style_facts:
+        lines.append("• Пока есть только базовый черновик без деталей.")
+
+    participant_preferences = brief.get("participant_preferences") or {}
+    if participant_preferences:
+        lines.append("\n👤 <b>Что добавили участники</b>")
+        for name, prefs in participant_preferences.items():
+            row: list[str] = []
+            if prefs.get("budget_rub_max"):
+                row.append(f"бюджет: до {prefs['budget_rub_max']:,} ₽".replace(",", " "))
+            if prefs.get("date_range_raw"):
+                row.append(f"даты: {esc(prefs['date_range_raw'])}")
+            elif prefs.get("months"):
+                row.append("даты: " + ", ".join(esc(item) for item in prefs["months"]))
+            if prefs.get("flight_hours_max"):
+                row.append(f"перелёт: до {esc(prefs['flight_hours_max'])} ч.")
+            if "visa_required" in prefs:
+                row.append("визы: " + ("нужна" if prefs["visa_required"] else "без визы"))
+            if prefs.get("passports_status"):
+                row.append("загранпаспорта: " + esc(prefs["passports_status"]))
+            if prefs.get("climate"):
+                row.append("климат и локация: " + esc(humanize_climate(prefs["climate"])))
+            if prefs.get("trip_type"):
+                row.append("формат отдыха: " + esc(prefs["trip_type"]))
+            if prefs.get("activity_preferences"):
+                row.append("доп. пожелания: " + ", ".join(esc(item) for item in prefs["activity_preferences"]))
+            if prefs.get("constraints_notes"):
+                row.append("ограничения: " + ", ".join(esc(item) for item in prefs["constraints_notes"]))
+            if not row and prefs.get("context_raw"):
+                row.append("свободное описание: " + esc(prefs["context_raw"]))
+            if row:
+                lines.append(f"• <b>{esc(name)}</b>: " + " · ".join(row))
+
+    return "\n".join(lines)
+
+
+def participant_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить бриф", callback_data="participant:confirm")],
+            [InlineKeyboardButton(text="✏️ Дополнить ещё", callback_data="participant:edit")],
+        ]
+    )
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -349,9 +547,10 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-async def start_handler(message: Message, state: FSMContext) -> None:
+async def start_handler(message: Message, state: Optional[FSMContext] = None) -> None:
     logging.info("Received /start from chat_id=%s", message.chat.id)
-    await state.update_data(role="organizer")
+    if state is not None:
+        await state.update_data(role="organizer")
     await message.answer(
         "Привет! Я помогаю группе быстро собрать вводные и прийти к короткому списку направлений — без бесконечных уточнений в чате.\n\n"
         "Как это работает:\n"
@@ -504,11 +703,104 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
         return
 
     event["participants"].add(message.chat.id)
+    event_brief = event.get("brief") or {}
+    participant_name = (
+        message.from_user.full_name
+        if message.from_user and message.from_user.full_name
+        else str(message.chat.id)
+    )
+    await state.update_data(
+        role="participant",
+        event_code=event_code,
+        participant_name=participant_name,
+    )
+    await state.set_state(FlowState.participant_contribute)
     await message.answer(
-        "Вы подключены к событию.\n"
-        "Я вижу вводные организатора и скоро начну собирать ваши предпочтения.\n\n"
-        "Пока просто ответьте одним сообщением:\n"
-        "— что для вас важно в поездке (бюджет/даты/перелёт/дети/климат/тип отдыха)?"
+        "✅ <b>Вас подключили к событию поездки.</b>\n\n"
+        "Событие — это общий процесс согласования поездки для вашей группы:\n"
+        "организатор собирает вводные, участники добавляют свои пожелания, а я свожу всё в единый бриф.\n\n"
+        "Я помогаю убрать хаос в переписке: фиксирую ограничения и показываю, что важно всей группе."
+    )
+    await message.answer(
+        f"{format_brief_for_participant(event_brief)}\n\n"
+        "✍️ <b>Дополните бриф одним сообщением:</b>\n"
+        "напишите, что важно лично вам (бюджет, даты, перелёт, документы, климат, формат отдыха)."
+    )
+
+
+async def participant_contribute_handler(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await message.answer("Событие не найдено. Попросите организатора прислать новую ссылку.")
+        return
+
+    event = EVENTS[event_code]
+    base_brief = event.get("brief") or {}
+    incoming = extract_brief_from_text(message.text or "")
+    participant_name = data.get("participant_name") or (
+        message.from_user.full_name if message.from_user else str(message.chat.id)
+    )
+    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+    event["brief"] = updated_brief
+
+    updates = event.setdefault("participant_updates", {})
+    updates[message.chat.id] = {
+        "text": message.text or "",
+        "confirmed": False,
+        "name": participant_name,
+        "username": (message.from_user.username if message.from_user else None),
+        "updated_at": now_ts(),
+    }
+
+    await state.set_state(FlowState.participant_confirm)
+    await message.answer(
+        "Обновила бриф с учетом ваших вводных.\n\n"
+        f"{format_brief_for_participant(updated_brief)}\n\n"
+        "Проверьте, пожалуйста: всё верно?",
+        reply_markup=participant_confirm_keyboard(),
+    )
+
+
+async def participant_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await callback.message.answer("Событие не найдено. Попросите новую ссылку от организатора.")
+        return
+
+    event = EVENTS[event_code]
+    updates = event.setdefault("participant_updates", {})
+    update_row = updates.setdefault(callback.message.chat.id, {})
+    update_row["confirmed"] = True
+    update_row["confirmed_at"] = now_ts()
+
+    participant_name = data.get("participant_name") or (
+        callback.from_user.full_name if callback.from_user else str(callback.message.chat.id)
+    )
+    await callback.message.answer(
+        "Спасибо, принято ✅\n"
+        "Отправляю обновлённый бриф организатору."
+    )
+
+    organizer_chat_id = event.get("organizer_chat_id")
+    if organizer_chat_id:
+        username = callback.from_user.username if callback.from_user else None
+        user_caption = f"@{username}" if username else participant_name
+        await callback.bot.send_message(
+            organizer_chat_id,
+            "🔔 <b>Обновление от участника</b>\n\n"
+            f"{html.escape(user_caption)} дополнил(а) бриф и подтвердил(а), что всё верно.\n\n"
+            f"{format_brief_for_participant(event.get('brief') or {})}",
+        )
+
+
+async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(FlowState.participant_contribute)
+    await callback.message.answer(
+        "Хорошо, напишите одним сообщением, что нужно уточнить или добавить в бриф."
     )
 
 
@@ -604,6 +896,10 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
 async def text_fallback_handler(message: Message) -> None:
     logging.info("Received text from chat_id=%s: %s", message.chat.id, message.text)
+    normalized = (message.text or "").strip().lower()
+    if normalized in {"начать", "/start"}:
+        await start_handler(message, None)
+        return
     if message.text == "ℹ️ Что умеет бот":
         await capabilities_handler(message)
         return
@@ -629,6 +925,7 @@ async def main() -> None:
     dp.message.register(new_event_handler, F.text == "➕ Создать событие")
     dp.message.register(capabilities_handler, F.text == "ℹ️ Что умеет бот")
     dp.message.register(help_handler, F.text == "🆘 Помощь")
+    dp.message.register(participant_contribute_handler, FlowState.participant_contribute, F.text)
     dp.message.register(organizer_dump_handler, FlowState.organizer_dump, F.text)
     dp.message.register(organizer_clarify_handler, FlowState.organizer_clarify, F.text)
     dp.message.register(text_fallback_handler, F.text)
@@ -636,6 +933,8 @@ async def main() -> None:
     dp.callback_query.register(role_callback_handler, F.data.startswith("role:"))
     dp.callback_query.register(event_create_callback_handler, F.data == "event:create")
     dp.callback_query.register(event_invite_callback_handler, F.data == "event:invite")
+    dp.callback_query.register(participant_confirm_callback_handler, F.data == "participant:confirm")
+    dp.callback_query.register(participant_edit_callback_handler, F.data == "participant:edit")
 
     await bot.set_my_commands(
         [
@@ -646,13 +945,37 @@ async def main() -> None:
     )
 
     global BOT_USERNAME
-    BOT_USERNAME = (await bot.get_me()).username
+    BOT_USERNAME = None
+    me_attempts = 3
+    for attempt in range(1, me_attempts + 1):
+        try:
+            me = await asyncio.wait_for(bot.get_me(), timeout=8)
+            BOT_USERNAME = me.username
+            logging.info("Bot profile loaded: @%s", BOT_USERNAME)
+            break
+        except Exception as err:
+            if attempt >= me_attempts:
+                logging.warning(
+                    "Failed to load bot profile after %s attempts: %s. Continuing without username.",
+                    me_attempts,
+                    err,
+                )
+                break
+            wait_seconds = attempt * 2
+            logging.warning(
+                "get_me failed (attempt %s/%s): %s. Retrying in %ss...",
+                attempt,
+                me_attempts,
+                err,
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
 
     # Polling mode should not compete with webhooks.
     # If Telegram API is temporarily slow, do not block startup forever.
     try:
         await asyncio.wait_for(
-            bot.delete_webhook(drop_pending_updates=False),
+            bot.delete_webhook(drop_pending_updates=True),
             timeout=6,
         )
     except Exception as err:
