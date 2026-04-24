@@ -170,6 +170,10 @@ def is_help_text(value: str) -> bool:
     return normalize_text(value) == "помощь"
 
 
+def is_create_event_text(value: str) -> bool:
+    return normalize_text(value) == "создать событие"
+
+
 def is_my_events_text(value: str) -> bool:
     return normalize_text(value) == "мои события"
 
@@ -236,6 +240,12 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     m = re.search(r"(\d+)\s*взросл", t)
     if m:
         brief["adults"] = int(m.group(1))
+    m = re.search(r"(\d+)\s*девуш", t)
+    if m:
+        brief["adults"] = int(m.group(1))
+    m = re.search(r"(\d+)\s*коллег", t)
+    if m:
+        brief["adults"] = int(m.group(1))
     m = re.search(r"(\d+)\s*(?:дет|реб)", t)
     if m:
         brief["kids_count"] = int(m.group(1))
@@ -258,11 +268,22 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     m = re.search(r"(?:с\s*)?(\d{1,2})\s*(?:по|[-–])\s*(\d{1,2})\s*(январ[ья]|феврал[ья]|март[а]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[а]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])", t)
     if m:
         brief["date_range_raw"] = m.group(0)
+    m = re.search(r"(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(?:дн|дней|дня)", t)
+    if m:
+        brief["trip_duration_days_raw"] = f"{m.group(1)}-{m.group(2)} дней"
+    else:
+        m = re.search(r"(\d{1,2})\s*(?:дн|дней|дня)", t)
+        if m:
+            brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
 
     # Flight duration: "до 5 часов"
     m = re.search(r"(?:до|не\s*больше)\s*(\d{1,2})\s*(?:ч|час)", t)
     if m:
         brief["flight_hours_max"] = int(m.group(1))
+    if "можно с пересад" in t or "пересадки можно" in t or "пересадки ок" in t or "пересадки норм" in t:
+        brief["transfers_allowed"] = True
+    if "без пересад" in t or "прямой рейс" in t:
+        brief["transfers_allowed"] = False
 
     # Visa constraint
     if "без виз" in t:
@@ -354,6 +375,10 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 
     # Specific activity/place preferences often mentioned by participants.
     activity_preferences = []
+    if "ази" in t:
+        activity_preferences.append("предпочтение по направлению: Азия")
+    if "европ" in t:
+        activity_preferences.append("предпочтение по направлению: Европа")
     if "песчан" in t and ("пляж" in t or "море" in t):
         activity_preferences.append("песчаный пляж")
     if "достопримеч" in t or "экскурс" in t:
@@ -456,7 +481,7 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append("Бюджет (хотя бы «до … ₽»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
-    if not brief.get("flight_hours_max"):
+    if not brief.get("flight_hours_max") and ("transfers_allowed" not in brief):
         missing.append("Ограничение по перелёту (например, «до 5 часов»)")
     # Visas/documents: consider answered if user mentioned visa status/notes/passports
     documents_answered = (
@@ -522,6 +547,10 @@ def format_brief_update_message(brief: Dict[str, Any]) -> str:
         facts.append(f"💰 <b>Бюджет:</b> до {brief['budget_rub_max']:,} ₽".replace(",", " "))
     if brief.get("flight_hours_max"):
         facts.append(f"✈️ <b>Перелёт:</b> до {esc(brief['flight_hours_max'])} ч.")
+    elif brief.get("transfers_allowed") is True:
+        facts.append("✈️ <b>Перелёт:</b> пересадки допустимы")
+    elif brief.get("transfers_allowed") is False:
+        facts.append("✈️ <b>Перелёт:</b> желательно без пересадок")
     if "visa_required" in brief:
         facts.append("🛂 <b>Визы:</b> " + ("нужна" if brief["visa_required"] else "без визы"))
     if brief.get("visa_status"):
@@ -536,6 +565,8 @@ def format_brief_update_message(brief: Dict[str, Any]) -> str:
         facts.append("🌤 <b>Климат:</b> " + esc(brief["climate"]))
     if brief.get("trip_type"):
         facts.append("🏝 <b>Тип отдыха:</b> " + esc(brief["trip_type"]))
+    if brief.get("trip_duration_days_raw"):
+        facts.append("⏳ <b>Длительность:</b> " + esc(brief["trip_duration_days_raw"]))
     if brief.get("activity_preferences"):
         facts.append("🧩 <b>Дополнительные пожелания:</b> " + ", ".join(esc(item) for item in brief["activity_preferences"]))
 
@@ -614,12 +645,17 @@ def format_brief_for_participant(brief: Dict[str, Any]) -> str:
         group_value = "—"
     core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
-    flight_value = (
-        f"до {esc(brief['flight_hours_max'])} ч."
-        if brief.get("flight_hours_max")
-        else "—"
-    )
+    if brief.get("flight_hours_max"):
+        flight_value = f"до {esc(brief['flight_hours_max'])} ч."
+    elif brief.get("transfers_allowed") is True:
+        flight_value = "пересадки допустимы"
+    elif brief.get("transfers_allowed") is False:
+        flight_value = "желательно без пересадок"
+    else:
+        flight_value = "—"
     core_facts.append(f"✈️ <b>Перелёт:</b> {flight_value}")
+    duration_value = esc(brief["trip_duration_days_raw"]) if brief.get("trip_duration_days_raw") else "—"
+    core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
 
     if "visa_required" in brief:
         visa_value = "нужна" if brief["visa_required"] else "без визы"
@@ -843,17 +879,11 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     EVENTS[event_code]["invite_link"] = invite_link
     save_events()
 
-    invite_text = (
-        f"\n\nСсылка для участников:\n{invite_link}"
-        if invite_link
-        else "\n\nСсылка для участников появится после перезапуска бота."
-    )
-
     await message.answer(
         "Ок, событие создано.\n"
         "Сейчас вы — организатор этого события.\n\n"
         "Шаг 1: одним сообщением опишите вводные по поездке."
-        f"{invite_text}\n\n"
+        "\n\n"
         "Пример:\n"
         "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»",
         reply_markup=main_menu_keyboard(),
@@ -1237,7 +1267,7 @@ async def main() -> None:
     dp.message.register(start_payload_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
     dp.message.register(new_event_handler, Command("new"))
-    dp.message.register(new_event_handler, F.text == "✨ Создать событие")
+    dp.message.register(new_event_handler, F.text.func(is_create_event_text))
     dp.message.register(my_events_handler, F.text.func(is_my_events_text))
     dp.message.register(capabilities_handler, F.text.func(is_capabilities_text))
     dp.message.register(help_handler, F.text.func(is_help_text))
