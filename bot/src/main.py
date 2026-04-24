@@ -557,6 +557,18 @@ def format_brief_for_participant(brief: Dict[str, Any]) -> str:
         }
         return mapping.get(value, value)
 
+    def split_activity_preferences(items: List[str]) -> tuple[List[str], List[str]]:
+        directions: List[str] = []
+        other: List[str] = []
+        for raw in items:
+            text = str(raw).strip()
+            low = text.lower()
+            if low.startswith("предпочтение по направлению:"):
+                directions.append(text.split(":", 1)[1].strip())
+            else:
+                other.append(text)
+        return directions, other
+
     lines: list[str] = []
     lines.append("📌 <b>Что уже зафиксировано по событию</b>")
 
@@ -574,42 +586,67 @@ def format_brief_for_participant(brief: Dict[str, Any]) -> str:
             word = "детей"
         return f"{count} {word}"
 
-    core_facts: list[str] = []
-    style_facts: list[str] = []
+    core_facts: List[str] = []
+    style_facts: List[str] = []
     if brief.get("date_range_raw"):
-        core_facts.append(f"📅 <b>Даты:</b> <code>{esc(brief['date_range_raw'])}</code>")
+        dates_value = f"<code>{esc(brief['date_range_raw'])}</code>"
     elif brief.get("months"):
-        core_facts.append("📅 <b>Примерные даты:</b> " + ", ".join(esc(item) for item in brief["months"]))
-    if brief.get("budget_rub_max"):
-        core_facts.append(f"💰 <b>Бюджет:</b> до {brief['budget_rub_max']:,} ₽".replace(",", " "))
+        dates_value = ", ".join(esc(item) for item in brief["months"])
+    else:
+        dates_value = "—"
+    core_facts.append(f"📅 <b>Даты:</b> {dates_value}")
+
+    budget_value = (
+        f"до {brief['budget_rub_max']:,} ₽".replace(",", " ")
+        if brief.get("budget_rub_max")
+        else "—"
+    )
+    core_facts.append(f"💰 <b>Бюджет:</b> {budget_value}")
+
     if brief.get("adults") or brief.get("kids_count"):
         parts: list[str] = []
         if brief.get("adults"):
             parts.append(f"{brief['adults']} взрослых")
         if brief.get("kids_count"):
             parts.append(format_kids(int(brief["kids_count"])))
-        core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + ", ".join(parts))
-    if brief.get("flight_hours_max"):
-        core_facts.append(f"✈️ <b>Перелёт:</b> до {esc(brief['flight_hours_max'])} ч.")
-    if "visa_required" in brief:
-        core_facts.append("🛂 <b>Визы:</b> " + ("нужна" if brief["visa_required"] else "без визы"))
-    if brief.get("passports_status"):
-        core_facts.append("🛃 <b>Загранпаспорта:</b> " + esc(brief["passports_status"]))
-    if brief.get("climate"):
-        style_facts.append("🌤 <b>Климат и локация:</b> " + esc(humanize_climate(brief["climate"])))
-    if brief.get("trip_type"):
-        style_facts.append("🏝 <b>Формат отдыха:</b> " + esc(brief["trip_type"]))
-    if brief.get("activity_preferences"):
-        style_facts.append("🧩 <b>Дополнительные пожелания:</b> " + ", ".join(esc(item) for item in brief["activity_preferences"]))
+        group_value = ", ".join(parts)
+    else:
+        group_value = "—"
+    core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
-    if core_facts:
-        lines.append("\n🧱 <b>Базовые параметры поездки</b>")
-        lines.extend([f"• {f}" for f in core_facts])
-    if style_facts:
-        lines.append("\n🎯 <b>Пожелания по формату поездки</b>")
-        lines.extend([f"• {f}" for f in style_facts])
-    if not core_facts and not style_facts:
-        lines.append("• Пока есть только базовый черновик без деталей.")
+    flight_value = (
+        f"до {esc(brief['flight_hours_max'])} ч."
+        if brief.get("flight_hours_max")
+        else "—"
+    )
+    core_facts.append(f"✈️ <b>Перелёт:</b> {flight_value}")
+
+    if "visa_required" in brief:
+        visa_value = "нужна" if brief["visa_required"] else "без визы"
+    else:
+        visa_value = "—"
+    core_facts.append(f"🛂 <b>Визы:</b> {visa_value}")
+
+    passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
+    core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
+
+    climate_value = esc(humanize_climate(brief["climate"])) if brief.get("climate") else "—"
+    style_facts.append(f"🌤 <b>Климат и локация:</b> {climate_value}")
+
+    trip_type_value = esc(brief["trip_type"]) if brief.get("trip_type") else "—"
+    style_facts.append(f"🏝 <b>Формат отдыха:</b> {trip_type_value}")
+
+    directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
+    direction_value = ", ".join(esc(item) for item in directions) if directions else "—"
+    style_facts.append(f"🧭 <b>Предпочтение по направлению:</b> {direction_value}")
+
+    extra_value = ", ".join(esc(item) for item in extra_activity) if extra_activity else "—"
+    style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
+
+    lines.append("\n🧱 <b>Базовые параметры поездки</b>")
+    lines.extend([f"• {f}" for f in core_facts])
+    lines.append("\n🎯 <b>Пожелания по формату поездки</b>")
+    lines.extend([f"• {f}" for f in style_facts])
 
     participant_preferences = brief.get("participant_preferences") or {}
     if participant_preferences:
@@ -1009,10 +1046,18 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     save_events()
 
     await state.set_state(FlowState.participant_confirm)
+    missing = missing_brief_fields(updated_brief)
+    missing_block = ""
+    if missing:
+        missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
+        missing_block = (
+            "\n\n📝 <b>Что ещё нужно уточнить для полного брифа</b>\n"
+            f"{missing_text}"
+        )
     await message.answer(
         "Обновила бриф с учетом ваших вводных.\n\n"
         f"{format_brief_for_participant(updated_brief)}\n\n"
-        "Проверьте, пожалуйста: всё верно?",
+        f"Проверьте, пожалуйста: всё верно?{missing_block}",
         reply_markup=participant_confirm_keyboard(),
     )
 

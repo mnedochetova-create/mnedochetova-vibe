@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Обзор рынка и моделей запуска консьерж-сервиса для Бизнес Тур</title>
+  <style>
+    @font-face {
+      font-family: "Styrene ALC";
+      src:
+        local("Styrene ALC Light"),
+        local("StyreneALC-Light"),
+        url("./assets/fonts/StyreneALC-Light.woff2") format("woff2"),
+        url("./assets/fonts/StyreneALC-Light.otf") format("opentype"),
+        url("./assets/fonts/StyreneALC-Light.ttf") format("truetype");
+      font-weight: 300;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #fafafa;
+      --text: #0d0d0d;
+      --muted: #5c5c5c;
+      --rule: #0d0d0d;
+      --line: #e0e0e0;
+      --table-head: #f3f3f4;
+      --maxw: 680px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Styrene ALC", "Styrene ALC Web", -apple-system, BlinkMacSystemFont,
+        "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+      font-weight: 300;
+      background: #ececec;
+      color: var(--text);
+      line-height: 1.5;
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .doc { padding: 18px 0 28px; }
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 0 auto 18px;
+      background: var(--bg);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+      position: relative;
+      overflow: hidden;
+      page-break-after: always;
+      break-after: page;
+    }
+    .page:last-child {
+      page-break-after: auto;
+      break-after: auto;
+      margin-bottom: 0;
+    }
+    .hero {
+      padding: 3rem 1.5rem 2.25rem;
+      border-bottom: 3px solid var(--rule);
+      background: var(--bg-subtle);
+    }
+    .hero-inner { max-width: var(--maxw); margin: 0 auto; }
+    .kicker {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 1.1rem;
+    }
+    .kicker span { color: var(--text); margin-right: 0.35em; }
+    .hero-title {
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 2.75rem);
+      font-weight: 600;
+      letter-spacing: -0.035em;
+      line-height: 1.08;
+      max-width: 28ch;
+    }
+    .page-main { max-width: var(--maxw); margin: 0 auto; padding: 1.8rem 1.5rem 2.6rem; }
+    h2 {
+      margin: 2.1rem 0 0.7rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    h2::after {
+      content: "";
+      display: block;
+      width: 100%;
+      max-width: 4.5rem;
+      height: 4px;
+      background: var(--rule);
+      margin-top: 0.75rem;
+    }
+    p { margin: 0 0 0.75rem; }
+    strong { font-weight: 600; }
+    ul, ol { margin: 0 0 0.8rem; padding-left: 1.2rem; }
+    li { margin-bottom: 0.25rem; }
+    hr {
+      border: none;
+      height: 1px;
+      background: var(--line);
+      margin: 1.7rem 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+      margin: 0.95rem 0 1.25rem;
+      border: 1px solid var(--line);
+    }
+    th, td {
+      padding: 0.58rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      background: var(--table-head);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.68rem;
+    }
+    tr:last-child td { border-bottom: none; }
+    .footnote {
+      margin-top: 0.9rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--line);
+      font-size: 0.85rem;
+      color: var(--muted);
+      font-style: italic;
+    }
+    .deliverables {
+      margin-bottom: 0.55rem;
+    }
+    .deliverables li {
+      margin-bottom: 0.22rem;
+      line-height: 1.35;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .section-3 {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .section-3 h2,
+    .section-3 ul,
+    .section-3 .footnote {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .page-num {
+      position: absolute;
+      right: 1.4rem;
+      bottom: 1rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    @media print {
+      @page { size: A4; margin: 0; }
+      body { background: #fff; }
+      .doc { padding: 0; }
+      .page {
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="doc">
+    <section class="page">
+      <header class="hero">
+        <div class="hero-inner">
+          <p class="kicker"><span>●</span> Консалтинг · Бизнес Тур</p>
+          <h1 class="hero-title">Обзор рынка и моделей запуска консьерж-сервиса для Бизнес Тур</h1>
+        </div>
+      </header>
+      <main class="page-main">
+        <p><strong>Контекст:</strong> Бизнес Тур рассматривает запуск консьерж-сервиса, опираясь на действующую инфраструктуру и присутствие в Китае, Дубае и РФ.</p>
+        <p><strong>Цель работы:</strong> подготовить прикладной аналитический материал для управленческого решения: как Бизнес Тур может зайти в консьерж-направление с опорой на текущую инфраструктуру.</p>
+        <p><strong>Срок выполнения:</strong> 1 неделя.</p>
+        <p><strong>Стоимость:</strong> 100 000 руб.</p>
+        <hr />
+
+        <h2>1. Что будет в материале</h2>
+        <ol>
+          <li><strong>Ландшафт рынка консьержей в России</strong> с учетом международных сервисов:
+            <ul>
+              <li>ключевые игроки и типы моделей;</li>
+              <li>позиционирование, каналы и клиентские сегменты;</li>
+              <li>сильные и слабые стороны подходов.</li>
+            </ul>
+          </li>
+          <li><strong>Номенклатура и архитектура услуг</strong> на базе текущих офисов (Китай, Дубай, РФ):
+            <ul>
+              <li>какие сценарии можно запустить быстро;</li>
+              <li>какие офисы закрывают какие запросы клиентов;</li>
+              <li>какие ограничения и риски нужно учитывать на старте.</li>
+            </ul>
+          </li>
+          <li><strong>Источники монетизации и модели внедрения</strong>:
+            <ul>
+              <li>источники дохода: fee, подписка/retainer, маржа на партнерских сервисах, спецпроекты;</li>
+              <li>потенциальные операционные модели внедрения: in-house, гибрид, партнерская;</li>
+              <li>плюсы/ограничения моделей и условия применимости для Бизнес Тур.</li>
+            </ul>
+          </li>
+        </ol>
+      </main>
+      <div class="page-num">Стр. 1 / 2</div>
+    </section>
+
+    <section class="page">
+      <main class="page-main">
+        <h2>2. Состав работ за 1 неделю</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Этап</th>
+              <th>Результат</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Дни 1–2</td>
+              <td>Сбор и структурирование материалов по рынку; карта игроков и конкурентная рамка.</td>
+            </tr>
+            <tr>
+              <td>Дни 3–4</td>
+              <td>Проработка номенклатуры услуг и клиентских сценариев на базе офисов в Китае, Дубае и РФ.</td>
+            </tr>
+            <tr>
+              <td>Дни 5–6</td>
+              <td>Формирование блока по монетизации и моделям внедрения; сборка итогового storyline и ключевых слайдов.</td>
+            </tr>
+            <tr>
+              <td>День 7</td>
+              <td>Финальная вычитка и передача итоговой версии.</td>
+            </tr>
+          </tbody>
+        </table>
+        <hr />
+
+        <section class="section-3">
+          <h2>3. Что передается по итогам</h2>
+          <ul class="deliverables">
+            <li>Готовый аналитический материал (презентационный формат) для обсуждения с руководством.</li>
+            <li>Обзор ландшафта рынка: сегменты, игроки и ориентиры для позиционирования.</li>
+            <li>Структурированная номенклатура услуг под инфраструктуру Бизнес Тур.</li>
+            <li>Блок по источникам монетизации и потенциальным моделям внедрения с рекомендациями по старту.</li>
+          </ul>
+
+          <p class="footnote">При необходимости вторым этапом можно отдельно детализировать выбранную модель внедрения и финансовую модель по сценариям запуска.</p>
+        </section>
+      </main>
+      <div class="page-num">Стр. 2 / 2</div>
+    </section>
+  </div>
+</body>
+</html>
