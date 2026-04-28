@@ -44,7 +44,7 @@ class FlowState(StatesGroup):
 
 BOT_USERNAME: Optional[str] = None
 
-# In-memory storage for manual testing (will reset on restart).
+# Runtime storage (persisted to file).
 # event_code -> event dict
 EVENTS: Dict[str, Dict[str, Any]] = {}
 EVENTS_FILE = (Path(__file__).resolve().parent.parent / "data" / "events.json")
@@ -60,6 +60,23 @@ def new_event_code() -> str:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def chat_key(chat_id: Any) -> str:
+    return str(chat_id)
+
+
+def next_event_number() -> int:
+    max_number = 0
+    for event in EVENTS.values():
+        value = event.get("event_number")
+        if isinstance(value, int) and value > max_number:
+            max_number = value
+    return max_number + 1
+
+
+def touch_event(event: Dict[str, Any]) -> None:
+    event["updated_at"] = now_ts()
 
 
 def get_brief_parser_prompt() -> str:
@@ -130,14 +147,33 @@ def load_events() -> None:
         for code, event in raw.items():
             row = dict(event or {})
             participants = row.get("participants") or {}
+            participant_updates = row.get("participant_updates") or {}
+            event_number = row.get("event_number")
             # Backward compatibility for old storage where participants was a list/set.
             if isinstance(participants, list):
                 participants = {
                     str(chat_id): {"role": "participant", "joined_at": row.get("created_at")}
                     for chat_id in participants
                 }
+            # Normalize participant_updates keys to string chat_id.
+            if isinstance(participant_updates, dict):
+                participant_updates = {
+                    str(chat_id): dict(payload or {})
+                    for chat_id, payload in participant_updates.items()
+                }
             row["participants"] = participants
+            row["participant_updates"] = participant_updates
+            if not isinstance(event_number, int):
+                row["event_number"] = None
             loaded[code] = row
+
+        # Backfill event_number for old records to keep stable numbering in UI.
+        numbered = [e.get("event_number") for e in loaded.values() if isinstance(e.get("event_number"), int)]
+        current_max = max(numbered) if numbered else 0
+        for code, event in loaded.items():
+            if not isinstance(event.get("event_number"), int):
+                current_max += 1
+                event["event_number"] = current_max
         EVENTS = loaded
     except Exception as err:
         logging.warning("Failed to load events from disk: %s", err)
@@ -157,7 +193,7 @@ def save_events() -> None:
 
 def normalize_text(value: str) -> str:
     text = (value or "").strip().lower()
-    for token in ["ℹ️", "ℹ", "🆘", "➕", "✨"]:
+    for token in ["ℹ️", "ℹ", "🆘", "➕", "✨", "📂"]:
         text = text.replace(token, "")
     return " ".join(text.split())
 
@@ -176,6 +212,36 @@ def is_create_event_text(value: str) -> bool:
 
 def is_my_events_text(value: str) -> bool:
     return normalize_text(value) == "мои события"
+
+
+def get_latest_event_for_chat(chat_id: int) -> Optional[tuple[str, Dict[str, Any], str]]:
+    organizer_hits: list[tuple[str, Dict[str, Any]]] = []
+    participant_hits: list[tuple[str, Dict[str, Any]]] = []
+    for code, event in EVENTS.items():
+        if event.get("organizer_chat_id") == chat_id:
+            organizer_hits.append((code, event))
+            continue
+        participants = event.get("participants") or {}
+        if str(chat_id) in participants:
+            participant_hits.append((code, event))
+
+    def pick_latest(items: list[tuple[str, Dict[str, Any]]]) -> Optional[tuple[str, Dict[str, Any]]]:
+        if not items:
+            return None
+        items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
+        return items[0]
+
+    latest_organizer = pick_latest(organizer_hits)
+    if latest_organizer:
+        code, event = latest_organizer
+        return code, event, "organizer"
+
+    latest_participant = pick_latest(participant_hits)
+    if latest_participant:
+        code, event = latest_participant
+        return code, event, "participant"
+
+    return None
 
 
 async def handle_menu_shortcuts(message: Message) -> bool:
@@ -327,10 +393,6 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         if "есть разные мнения в группе" not in brief["constraints_notes"]:
             brief["constraints_notes"].append("есть разные мнения в группе — важно найти компромисс")
     prefs = []
-    if "хочу" in t:
-        prefs.append("есть предпочтение «хочу …»")
-    if "хотят" in t or "хочет" in t:
-        prefs.append("есть предпочтения других участников")
     if "переплач" in t:
         prefs.append("ограничение: не переплачивать")
     if "пересад" in t:
@@ -502,82 +564,12 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     return missing
 
 
-def format_brief_update_message(brief: Dict[str, Any]) -> str:
-    # Structured summary with richer Telegram-friendly formatting.
-    def esc(value: Any) -> str:
-        return html.escape(str(value))
-
-    lines: list[str] = []
-    lines.append("✨ <b>Черновик брифа обновлён</b>")
-
-    # 1) Preferences by party (if parsed)
-    parties = brief.get("party_preferences") or {}
-    if parties:
-        lines.append("\n👥 <b>Пожелания и ограничения участников</b>")
-        for party, data in parties.items():
-            row: list[str] = []
-            wants = data.get("wants") or []
-            constraints = data.get("constraints") or []
-            if data.get("constraint"):
-                constraints.append(data["constraint"])
-            if wants:
-                row.append("хочет: " + ", ".join(esc(item) for item in wants))
-            if constraints:
-                row.append("важно: " + ", ".join(esc(item) for item in constraints))
-            notes = data.get("notes") or []
-            if notes:
-                row.append("заметки: " + ", ".join(esc(item) for item in notes))
-            if row:
-                lines.append(f"• <b>{esc(party)}</b>: " + " · ".join(row))
-
-    # 2) General wishes/constraints (if any)
-    general_notes = brief.get("constraints_notes") or []
-    if general_notes:
-        lines.append("\n🧭 <b>Общие пожелания и ограничения</b>")
-        for item in general_notes:
-            lines.append(f"• {esc(item)}")
-
-    # 3) What we already know (facts)
-    facts: list[str] = []
-    if brief.get("date_range_raw"):
-        facts.append(f"📅 <b>Даты:</b> <code>{esc(brief['date_range_raw'])}</code>")
-    elif brief.get("months"):
-        facts.append("📅 <b>Примерные даты:</b> " + ", ".join(esc(item) for item in brief["months"]))
-    if brief.get("budget_rub_max"):
-        facts.append(f"💰 <b>Бюджет:</b> до {brief['budget_rub_max']:,} ₽".replace(",", " "))
-    if brief.get("flight_hours_max"):
-        facts.append(f"✈️ <b>Перелёт:</b> до {esc(brief['flight_hours_max'])} ч.")
-    elif brief.get("transfers_allowed") is True:
-        facts.append("✈️ <b>Перелёт:</b> пересадки допустимы")
-    elif brief.get("transfers_allowed") is False:
-        facts.append("✈️ <b>Перелёт:</b> желательно без пересадок")
-    if "visa_required" in brief:
-        facts.append("🛂 <b>Визы:</b> " + ("нужна" if brief["visa_required"] else "без визы"))
-    if brief.get("visa_status"):
-        facts.append("🧾 <b>Статус визы:</b> " + esc(brief["visa_status"]))
-    if brief.get("visa_notes"):
-        facts.append("📝 <b>Визовые заметки:</b> " + "; ".join(esc(item) for item in brief["visa_notes"]))
-    if brief.get("passports_status"):
-        facts.append("🛃 <b>Загранпаспорта:</b> " + esc(brief["passports_status"]))
-    if brief.get("passports_notes"):
-        facts.append("📝 <b>Загранпаспорта:</b> " + "; ".join(esc(item) for item in brief["passports_notes"]))
-    if brief.get("climate"):
-        facts.append("🌤 <b>Климат:</b> " + esc(brief["climate"]))
-    if brief.get("trip_type"):
-        facts.append("🏝 <b>Тип отдыха:</b> " + esc(brief["trip_type"]))
-    if brief.get("trip_duration_days_raw"):
-        facts.append("⏳ <b>Длительность:</b> " + esc(brief["trip_duration_days_raw"]))
-    if brief.get("activity_preferences"):
-        facts.append("🧩 <b>Дополнительные пожелания:</b> " + ", ".join(esc(item) for item in brief["activity_preferences"]))
-
-    if facts:
-        lines.append("\n📌 <b>Что уже известно</b>")
-        lines.extend([f"• {f}" for f in facts])
-
-    return "\n".join(lines)
-
-
-def format_brief_for_participant(brief: Dict[str, Any]) -> str:
+def format_brief_unified(
+    brief: Dict[str, Any],
+    event_number: Optional[int],
+    title: str,
+    subtitle: str,
+) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value))
 
@@ -601,7 +593,10 @@ def format_brief_for_participant(brief: Dict[str, Any]) -> str:
         return directions, other
 
     lines: list[str] = []
-    lines.append("📌 <b>Что уже зафиксировано по событию</b>")
+    lines.append(title)
+    event_label = f"#{event_number}" if isinstance(event_number, int) else "без номера"
+    lines.append(f"Событие: <b>{event_label}</b>")
+    lines.append(subtitle)
 
     def format_kids(count: int) -> str:
         # 1 ребенок, 2 ребенка, 5 детей
@@ -717,6 +712,24 @@ def format_brief_for_participant(brief: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_brief_update_message(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
+    return format_brief_unified(
+        brief=brief,
+        event_number=event_number,
+        title="✨ <b>Бриф поездки обновлён</b>",
+        subtitle="Собрала актуальную картину по событию.",
+    )
+
+
+def format_brief_for_participant(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
+    return format_brief_unified(
+        brief=brief,
+        event_number=event_number,
+        title="📌 <b>Актуальный бриф события</b>",
+        subtitle="Вот что уже согласовано на данный момент.",
+    )
+
+
 def participant_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -754,10 +767,17 @@ def my_events_keyboard(events: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     rows = []
     for item in events[:10]:
         role_icon = "👑" if item["role"] == "organizer" else "👤"
+        event_num = item.get("event_number", "—")
+        status_icon = item.get("status_icon", "•")
+        status_short = item.get("status_short", "событие")
+        action_short = item.get("action_short", "открыть")
+        text = f"{role_icon} #{event_num} · {status_icon} {status_short} · {action_short}"
+        if len(text) > 64:
+            text = text[:61] + "..."
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{role_icon} {item['code']} · {item['title']}",
+                    text=text,
                     callback_data=f"event:open:{item['code']}",
                 )
             ]
@@ -777,43 +797,170 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Продолжить сценарий", callback_data="help:continue")],
+            [InlineKeyboardButton(text="📝 Как написать вводные", callback_data="help:parser")],
+            [InlineKeyboardButton(text="❓ Почему нужно уточнение", callback_data="help:clarify")],
+            [InlineKeyboardButton(text="🔗 Проблема со ссылкой", callback_data="help:link")],
+            [InlineKeyboardButton(text="📂 Мои события", callback_data="help:myevents")],
+            [InlineKeyboardButton(text="📨 Сообщить о проблеме", callback_data="help:report")],
+        ]
+    )
+
+
+def context_snapshot(chat_id: int, fsm_state: Optional[str]) -> Dict[str, Any]:
+    recovered = get_latest_event_for_chat(chat_id)
+    if not recovered:
+        return {
+            "has_event": False,
+            "state": fsm_state or "не определено",
+        }
+    event_code, event, role = recovered
+    return {
+        "has_event": True,
+        "event_code": event_code,
+        "event_number": event.get("event_number"),
+        "role": role,
+        "state": fsm_state or "не определено",
+        "invite_ready": bool(event.get("invite_link")),
+        "missing_fields": missing_brief_fields(event.get("brief") or {}),
+    }
+
+
 async def start_handler(message: Message, state: Optional[FSMContext] = None) -> None:
     logging.info("Received /start from chat_id=%s", message.chat.id)
     if state is not None:
         await state.update_data(role="organizer")
     await message.answer(
-        "Привет! Я помогаю группе быстро собрать вводные и прийти к короткому списку направлений — без бесконечных уточнений в чате.\n\n"
-        "Как это работает:\n"
-        "1) вы создаёте событие и пишете вводные одним сообщением\n"
-        "2) участники заходят по ссылке и добавляют свои пожелания\n"
-        "3) я собираю общую картину и предлагаю 2–3 направления с объяснением.\n\n"
-        "Вы — организатор: организатором считается тот, кто создаёт событие.\n"
-        "Нажмите кнопку ниже, чтобы начать.",
-        reply_markup=main_menu_keyboard(),
+        "👋 <b>Привет! Я помогаю спокойно и быстро собрать вводные по поездке — без бесконечных уточнений в чате.</b>\n"
+        "Подойду, если вы планируете поездку с семьёй, друзьями или коллегами и хотите перейти от разрозненных сообщений к понятному плану.\n\n"
+        "⚙️ <b>Как это работает</b>\n"
+        "1) вы создаёте событие и отправляете вводные одним сообщением\n"
+        "2) участники подключаются по ссылке и добавляют свои пожелания\n"
+        "3) я собираю всё в единый бриф, чтобы сразу видеть общую картину.\n\n"
+        "👑 <b>Ваша роль — организатор</b>\n"
+        "Организатор — тот, кто создаёт событие: задаёт базовые параметры и приглашает участников.",
+        reply_markup=welcome_keyboard(),
     )
 
 
-async def help_handler(message: Message) -> None:
+async def help_handler(message: Message, state: Optional[FSMContext] = None) -> None:
     logging.info("Received /help from chat_id=%s", message.chat.id)
+    fsm_state = await state.get_state() if state is not None else None
+    snap = context_snapshot(message.chat.id, fsm_state)
+    if snap.get("has_event"):
+        event_number = snap.get("event_number")
+        event_label = f"#{event_number}" if isinstance(event_number, int) else "без номера"
+        role_label = "организатор" if snap.get("role") == "organizer" else "участник"
+        context_block = (
+            "🧭 <b>Ваш контекст</b>\n"
+            f"• Событие: <b>{event_label}</b>\n"
+            f"• Роль: <b>{role_label}</b>\n"
+            f"• Этап: <b>{html.escape(str(snap.get('state') or 'не определено'))}</b>"
+        )
+    else:
+        context_block = (
+            "🧭 <b>Ваш контекст</b>\n"
+            f"• Этап: <b>{html.escape(str(snap.get('state') or 'не определено'))}</b>\n"
+            "• Активное событие пока не найдено."
+        )
+
     await message.answer(
-        "Кнопки в меню:\n"
-        "— ✨ Создать событие\n"
-        "— ℹ️ Что умеет бот\n"
-        "— 🆘 Помощь\n\n"
-        "Если меню не видно, напишите /start."
+        "🆘 <b>Помощь</b>\n"
+        "Выберите, с чем помочь: продолжить сценарий, разобраться с парсером или решить техническую проблему.\n\n"
+        f"{context_block}",
+        reply_markup=help_keyboard(),
     )
 
 
 async def capabilities_handler(message: Message) -> None:
     logging.info("Capabilities requested by chat_id=%s", message.chat.id)
     await message.answer(
-        "Я экономлю время всей группы: собираю вводные в один бриф и превращаю разрозненные сообщения в понятные ограничения.\n\n"
+        "Я помогаю группе договориться без хаоса в переписке: собираю вводные в единый бриф и показываю общую картину.\n\n"
         "Сейчас я умею:\n"
         "1) принять вводные от организатора одним сообщением и уточнить только недостающее\n"
         "2) подключить участников по ссылке и собрать их пожелания\n"
         "3) собрать общую сводку и подсветить, где ожидания расходятся\n"
-        "4) предложить 2–3 направления и зафиксировать короткий список (без голосования в MVP)."
+        "4) сохранить прогресс события, чтобы вы могли вернуться к нему позже.\n\n"
+        "Этап рекомендаций по направлениям — следующий шаг развития."
     )
+
+
+def _latest_event_activity_ts(event: Dict[str, Any]) -> int:
+    ts = int(event.get("updated_at", event.get("created_at", 0)) or 0)
+    participants = event.get("participants") or {}
+    for row in participants.values():
+        ts = max(ts, int((row or {}).get("updated_at", 0) or 0))
+    updates = event.get("participant_updates") or {}
+    for row in updates.values():
+        ts = max(ts, int((row or {}).get("updated_at", 0) or 0))
+        ts = max(ts, int((row or {}).get("confirmed_at", 0) or 0))
+    return ts
+
+
+def _event_status_info(event: Dict[str, Any]) -> Dict[str, str]:
+    if event.get("archived_at"):
+        return {"key": "archived", "icon": "🗄", "short": "архив"}
+    if event.get("completed_at"):
+        return {"key": "completed", "icon": "✅", "short": "завершено"}
+    missing = missing_brief_fields(event.get("brief") or {})
+    if missing:
+        return {"key": "needs_clarification", "icon": "🧩", "short": "нужны уточнения"}
+    participants = event.get("participants") or {}
+    if participants:
+        confirmed = sum(1 for row in participants.values() if (row or {}).get("confirmed"))
+        if confirmed < len(participants):
+            return {"key": "waiting_participants", "icon": "⏳", "short": "ждем участников"}
+    return {"key": "active", "icon": "🟢", "short": "активно"}
+
+
+def _event_action_for_chat(event: Dict[str, Any], role: str, chat_id: int) -> str:
+    brief = event.get("brief") or {}
+    missing = missing_brief_fields(brief)
+    participants = event.get("participants") or {}
+    if role == "organizer":
+        if missing:
+            return f"уточнить: {len(missing)}"
+        if not participants:
+            return "пригласить"
+        confirmed = sum(1 for row in participants.values() if (row or {}).get("confirmed"))
+        if confirmed < len(participants):
+            return f"ответили: {confirmed}/{len(participants)}"
+        return "готово к следующему"
+
+    update = (event.get("participant_updates") or {}).get(str(chat_id), {})
+    if not update:
+        return "добавить пожелания"
+    if not update.get("confirmed"):
+        return "подтвердить бриф"
+    return "ожидать обновлений"
+
+
+def _build_my_event_item(code: str, event: Dict[str, Any], role: str, chat_id: int) -> Dict[str, Any]:
+    status = _event_status_info(event)
+    return {
+        "code": code,
+        "event_number": event.get("event_number"),
+        "role": role,
+        "status_icon": status["icon"],
+        "status_short": status["short"],
+        "action_short": _event_action_for_chat(event, role, chat_id),
+        "updated_at": _latest_event_activity_ts(event),
+    }
+
+
+def _action_priority(action_short: str) -> int:
+    if action_short.startswith("уточнить:"):
+        return 0
+    if action_short in {"добавить пожелания", "подтвердить бриф", "пригласить"}:
+        return 1
+    if action_short.startswith("ответили:"):
+        return 2
+    if action_short == "готово к следующему":
+        return 3
+    return 4
 
 
 async def my_events_handler(message: Message, state: Optional[FSMContext]) -> None:
@@ -822,23 +969,9 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
     for code, event in EVENTS.items():
         participants = event.get("participants") or {}
         if event.get("organizer_chat_id") == chat_id:
-            items.append(
-                {
-                    "code": code,
-                    "role": "organizer",
-                    "title": "организатор",
-                    "updated_at": event.get("created_at", 0),
-                }
-            )
+            items.append(_build_my_event_item(code, event, "organizer", chat_id))
         elif str(chat_id) in participants:
-            items.append(
-                {
-                    "code": code,
-                    "role": "participant",
-                    "title": "участник",
-                    "updated_at": participants[str(chat_id)].get("updated_at", event.get("created_at", 0)),
-                }
-            )
+            items.append(_build_my_event_item(code, event, "participant", chat_id))
 
     if not items:
         await message.answer(
@@ -848,10 +981,16 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
         )
         return
 
-    items.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+    items.sort(
+        key=lambda x: (
+            _action_priority(str(x.get("action_short") or "")),
+            -int(x.get("updated_at", 0) or 0),
+        )
+    )
     await message.answer(
         "📂 <b>Мои события</b>\n"
-        "Выберите событие, чтобы вернуться к нему:",
+        "Показываю актуальные события с ролью, статусом и следующим действием.\n"
+        "Выберите событие, чтобы продолжить:",
         reply_markup=my_events_keyboard(items),
     )
 
@@ -861,9 +1000,12 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     await state.update_data(organizer_chat_id=message.chat.id)
     await state.set_state(FlowState.organizer_dump)
     event_code = new_event_code()
+    event_number = next_event_number()
     EVENTS[event_code] = {
         "code": event_code,
+        "event_number": event_number,
         "created_at": now_ts(),
+        "updated_at": now_ts(),
         "organizer_chat_id": message.chat.id,
         "organizer_dump": None,
         "participants": {},
@@ -877,15 +1019,17 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         invite_link = None
 
     EVENTS[event_code]["invite_link"] = invite_link
+    touch_event(EVENTS[event_code])
     save_events()
 
     await message.answer(
-        "Ок, событие создано.\n"
-        "Сейчас вы — организатор этого события.\n\n"
-        "Шаг 1: одним сообщением опишите вводные по поездке."
+        "Событие создано ✅\n"
+        f"Номер события: <b>#{event_number}</b>\n\n"
+        "Опишите вводные по поездке одним сообщением."
         "\n\n"
-        "Пример:\n"
-        "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»",
+        "📝 <b>Пример</b>\n"
+        "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»\n\n"
+        "Можно писать в свободной форме — я структурирую текст и соберу бриф.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -896,19 +1040,25 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
     event = EVENTS.get(event_code) if event_code else None
     invite_link = event.get("invite_link") if event else None
 
-    invite_block = (
-        f"\n\nСсылка для участников:\n{invite_link}"
-        if invite_link
-        else "\n\nСсылку для участников я пришлю после перезапуска бота."
+    await message.answer(
+        "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
+        "Что сделать вам:\n"
+        "1) отправьте ссылку участникам\n"
+        "2) попросите их перейти по кнопке и ответить на короткие вопросы\n"
+        "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
+        reply_markup=invite_keyboard(),
     )
 
+
+async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
+    event = EVENTS.get(event_code) if event_code else None
+    invite_link = event.get("invite_link") if event else None
     await message.answer(
-        "Дальше — подключаем участников, чтобы собрать их предпочтения.\n\n"
-        "Что сделать организатору:\n"
+        "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
+        "Что сделать вам:\n"
         "1) отправьте ссылку участникам\n"
-        "2) попросите их перейти по ссылке и ответить на короткие вопросы\n"
-        "3) после ответов я соберу общую сводку и подсвечу расхождения.\n"
-        f"{invite_block}",
+        "2) попросите их перейти по кнопке и ответить на короткие вопросы\n"
+        "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
         reply_markup=invite_keyboard(),
     )
 
@@ -937,13 +1087,14 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
         return
 
     brief = event.get("brief") or {}
+    event_number = event.get("event_number")
     if is_organizer:
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
         await callback.message.answer(
             f"👑 Вы вернулись в событие <b>{html.escape(event_code)}</b> как организатор.\n\n"
-            f"{format_brief_update_message(brief)}\n\n"
-            "Можно продолжить уточнения одним сообщением.",
+            f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
+            "Можете продолжить уточнения одним сообщением.",
             reply_markup=main_menu_keyboard(),
         )
         return
@@ -955,8 +1106,8 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
     await state.set_state(FlowState.participant_contribute)
     await callback.message.answer(
         f"👤 Вы вернулись в событие <b>{html.escape(event_code)}</b> как участник.\n\n"
-        f"{format_brief_for_participant(brief)}\n\n"
-        "Напишите одним сообщением, что хотите дополнить.",
+        f"{format_brief_for_participant(brief, event_number=event_number)}\n\n"
+        "Напишите одним сообщением, что хотите дополнить в брифе.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -968,9 +1119,144 @@ async def event_invite_callback_handler(callback: CallbackQuery, state: FSMConte
     event = EVENTS.get(event_code) if event_code else None
     invite_link = event.get("invite_link") if event else None
     if not invite_link:
-        await callback.message.answer("Ссылка пока недоступна. Попробуйте чуть позже.", reply_markup=main_menu_keyboard())
+        await callback.message.answer(
+            "Ссылка пока недоступна. Попробуйте чуть позже — если не сработает, напишите /start.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
-    await callback.message.answer(f"Ссылка для участников:\n{invite_link}")
+    await callback.message.answer(
+        "Готово. Отправьте эту ссылку участникам:\n"
+        f"{invite_link}"
+    )
+
+
+async def help_continue_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    recovered = get_latest_event_for_chat(callback.message.chat.id)
+    if not recovered:
+        await callback.message.answer(
+            "Пока не вижу активного события. Создайте новое событие кнопкой «✨ Создать событие».",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    event_code, event, role = recovered
+    brief = event.get("brief") or {}
+    event_number = event.get("event_number")
+    if role == "organizer":
+        await state.update_data(role="organizer", event_code=event_code, brief=brief)
+        await state.set_state(FlowState.organizer_clarify)
+        await callback.message.answer(
+            f"🔁 Продолжаем событие <b>#{event_number if isinstance(event_number, int) else '—'}</b>.\n\n"
+            f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
+            "Напишите одним сообщением, что хотите уточнить или дополнить.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    participant_name = (
+        callback.from_user.full_name if callback.from_user and callback.from_user.full_name else str(callback.message.chat.id)
+    )
+    await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
+    await state.set_state(FlowState.participant_contribute)
+    await callback.message.answer(
+        f"🔁 Продолжаем событие <b>#{event_number if isinstance(event_number, int) else '—'}</b>.\n\n"
+        f"{format_brief_for_participant(brief, event_number=event_number)}\n\n"
+        "Напишите одним сообщением, что важно лично вам.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def help_parser_callback_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(
+        "📝 <b>Как написать вводные</b>\n"
+        "Пишите свободно, одним сообщением. Я сама разложу текст по полям.\n\n"
+        "Пример:\n"
+        "«2 взрослых, август, бюджет до 300к, перелёт до 5 часов, без визы, хотим море и экскурсии»\n\n"
+        "Чем конкретнее формулировки, тем меньше уточняющих вопросов.",
+        reply_markup=help_keyboard(),
+    )
+
+
+async def help_clarify_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    fsm_state = await state.get_state()
+    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    missing = snap.get("missing_fields") or []
+    if not missing:
+        await callback.message.answer(
+            "✅ Сейчас критичных белых пятен не вижу. Бриф достаточно полный для следующего шага.",
+            reply_markup=help_keyboard(),
+        )
+        return
+    missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
+    await callback.message.answer(
+        "❓ <b>Почему я прошу уточнение</b>\n"
+        "Эти пункты нужны, чтобы не ошибиться в итоговом брифе:\n"
+        f"{missing_text}\n\n"
+        "Можете ответить одним сообщением в свободной форме.",
+        reply_markup=help_keyboard(),
+    )
+
+
+async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    fsm_state = await state.get_state()
+    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    if not snap.get("has_event"):
+        await callback.message.answer(
+            "Сначала создайте событие, и я дам кнопку со ссылкой для участников.",
+            reply_markup=help_keyboard(),
+        )
+        return
+    if snap.get("role") != "organizer":
+        await callback.message.answer(
+            "Ссылку отправляет организатор. Если не получили её, попросите организатора нажать «📩 Показать ссылку для участников».",
+            reply_markup=help_keyboard(),
+        )
+        return
+    if not snap.get("invite_ready"):
+        await callback.message.answer(
+            "Ссылка ещё не готова. Заполните базовый бриф, и кнопка для приглашения станет доступной.",
+            reply_markup=help_keyboard(),
+        )
+        return
+    await callback.message.answer(
+        "Если участник не может войти:\n"
+        "1) попросите открыть ссылку заново\n"
+        "2) попросите отправить /start в боте\n"
+        "3) при необходимости нажмите «📩 Показать ссылку для участников» ещё раз.",
+        reply_markup=help_keyboard(),
+    )
+
+
+async def help_my_events_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await my_events_handler(callback.message, state)
+
+
+async def help_report_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    fsm_state = await state.get_state()
+    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    if snap.get("has_event"):
+        event_number = snap.get("event_number")
+        role = "организатор" if snap.get("role") == "organizer" else "участник"
+        context = (
+            f"• Событие: #{event_number if isinstance(event_number, int) else '—'}\n"
+            f"• Роль: {role}\n"
+            f"• Этап: {snap.get('state')}"
+        )
+    else:
+        context = f"• Этап: {snap.get('state')}\n• Активное событие: не найдено"
+    await callback.message.answer(
+        "📨 <b>Сообщить о проблеме</b>\n"
+        "Отправьте одним сообщением:\n"
+        "1) что вы нажали\n"
+        "2) что ожидали увидеть\n"
+        "3) что пришло фактически\n\n"
+        f"Контекст для сообщения:\n{context}",
+        reply_markup=help_keyboard(),
+    )
 
 
 async def role_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -1019,6 +1305,7 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     }
     save_events()
     event_brief = event.get("brief") or {}
+    event_number = event.get("event_number")
     participant_name = (
         message.from_user.full_name
         if message.from_user and message.from_user.full_name
@@ -1031,15 +1318,17 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     )
     await state.set_state(FlowState.participant_contribute)
     await message.answer(
-        "✅ <b>Вас подключили к событию поездки.</b>\n\n"
-        "Событие — это общий процесс согласования поездки для вашей группы:\n"
-        "организатор собирает вводные, участники добавляют свои пожелания, а я свожу всё в единый бриф.\n\n"
-        "Я помогаю убрать хаос в переписке: фиксирую ограничения и показываю, что важно всей группе."
+        "✅ <b>Вы подключены к событию поездки.</b>\n"
+        f"Номер события: <b>#{event_number if isinstance(event_number, int) else '—'}</b>\n\n"
+        "Вас пригласил организатор, чтобы собрать мнения участников и согласовать общий бриф.\n\n"
+        "👤 <b>Ваша роль — участник</b>\n"
+        "Вы добавляете личные пожелания и ограничения, а я встраиваю их в общую картину без потери важных деталей.\n\n"
+        "✍️ <b>Что сделать сейчас</b>\n"
+        "Прочитайте текущий бриф ниже и дополните его одним сообщением:\n"
+        "что важно лично вам (бюджет, даты, перелёт, документы, климат, формат отдыха)."
     )
     await message.answer(
-        f"{format_brief_for_participant(event_brief)}\n\n"
-        "✍️ <b>Дополните бриф одним сообщением:</b>\n"
-        "напишите, что важно лично вам (бюджет, даты, перелёт, документы, климат, формат отдыха)."
+        f"{format_brief_for_participant(event_brief, event_number=event_number)}"
     )
 
 
@@ -1054,6 +1343,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         return
 
     event = EVENTS[event_code]
+    event_number = event.get("event_number")
     base_brief = event.get("brief") or {}
     incoming = extract_brief_from_text(message.text or "")
     participant_name = data.get("participant_name") or (
@@ -1063,7 +1353,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     event["brief"] = updated_brief
 
     updates = event.setdefault("participant_updates", {})
-    updates[message.chat.id] = {
+    updates[chat_key(message.chat.id)] = {
         "text": message.text or "",
         "confirmed": False,
         "name": participant_name,
@@ -1073,6 +1363,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     participants = event.setdefault("participants", {})
     if str(message.chat.id) in participants:
         participants[str(message.chat.id)]["updated_at"] = now_ts()
+    touch_event(event)
     save_events()
 
     await state.set_state(FlowState.participant_confirm)
@@ -1081,12 +1372,12 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     if missing:
         missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
         missing_block = (
-            "\n\n📝 <b>Что ещё нужно уточнить для полного брифа</b>\n"
+            "\n\n🚨 <b>Нужно уточнить</b>\n"
             f"{missing_text}"
         )
     await message.answer(
-        "Обновила бриф с учетом ваших вводных.\n\n"
-        f"{format_brief_for_participant(updated_brief)}\n\n"
+        "Спасибо, добавила ваши вводные в бриф.\n\n"
+        f"{format_brief_for_participant(updated_brief, event_number=event_number)}\n\n"
         f"Проверьте, пожалуйста: всё верно?{missing_block}",
         reply_markup=participant_confirm_keyboard(),
     )
@@ -1102,20 +1393,21 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
 
     event = EVENTS[event_code]
     updates = event.setdefault("participant_updates", {})
-    update_row = updates.setdefault(callback.message.chat.id, {})
+    update_row = updates.setdefault(chat_key(callback.message.chat.id), {})
     update_row["confirmed"] = True
     update_row["confirmed_at"] = now_ts()
     participants = event.setdefault("participants", {})
     if str(callback.message.chat.id) in participants:
         participants[str(callback.message.chat.id)]["confirmed"] = True
         participants[str(callback.message.chat.id)]["confirmed_at"] = now_ts()
+    touch_event(event)
     save_events()
 
     participant_name = data.get("participant_name") or (
         callback.from_user.full_name if callback.from_user else str(callback.message.chat.id)
     )
     await callback.message.answer(
-        "Спасибо, принято ✅\n"
+        "Принято, спасибо ✅\n"
         "Отправляю обновлённый бриф организатору."
     )
 
@@ -1127,7 +1419,7 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
             organizer_chat_id,
             "🔔 <b>Обновление от участника</b>\n\n"
             f"{html.escape(user_caption)} дополнил(а) бриф и подтвердил(а), что всё верно.\n\n"
-            f"{format_brief_for_participant(event.get('brief') or {})}",
+            f"{format_brief_for_participant(event.get('brief') or {}, event_number=event.get('event_number'))}",
         )
 
 
@@ -1158,6 +1450,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["organizer_dump"] = text
             EVENTS[event_code]["brief"] = brief
+            touch_event(EVENTS[event_code])
             save_events()
 
         await state.update_data(organizer_dump=text, brief=brief)
@@ -1165,12 +1458,12 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
 
         missing = missing_brief_fields(brief)
 
-        summary_text = format_brief_update_message(brief)
+        summary_text = format_brief_update_message(brief, event_number=EVENTS.get(event_code, {}).get("event_number"))
 
         if not missing:
             await message.answer(
                 f"{summary_text}\n\n"
-                "Данных достаточно. Переходим к подключению участников.",
+                "Отлично, базовых данных достаточно. Переходим к подключению участников.",
                 reply_markup=main_menu_keyboard(),
             )
             await send_next_step_after_brief(message, state)
@@ -1179,15 +1472,15 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
         missing_text = "\n".join(f"- {m}" for m in missing)
         await message.answer(
             f"{summary_text}\n\n"
-            "Чтобы не переспрашивать лишнее, уточните, пожалуйста, только это (можно одним сообщением):\n"
+            "🚨 <b>Уточните только это</b> (можно одним сообщением):\n"
             f"{missing_text}",
             reply_markup=main_menu_keyboard(),
         )
     except Exception as err:
         logging.exception("organizer_dump_handler failed: %s", err)
         await message.answer(
-            "Я столкнулся с ошибкой и не смог обработать сообщение.\n"
-            "Попробуйте отправить вводные ещё раз одним сообщением.",
+            "Не удалось обработать сообщение с первого раза.\n"
+            "Отправьте, пожалуйста, вводные ещё раз одним сообщением.",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -1206,6 +1499,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["brief"] = brief
+            touch_event(EVENTS[event_code])
             save_events()
 
         await state.update_data(brief=brief)
@@ -1221,7 +1515,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
         missing_text = "\n".join(f"- {m}" for m in missing)
         await message.answer(
-            "Спасибо! Осталось уточнить:\n"
+            "🚨 <b>Осталось уточнить:</b>\n"
             f"{missing_text}\n\n"
             "Можно одним сообщением.",
             reply_markup=main_menu_keyboard(),
@@ -1229,8 +1523,8 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
     except Exception as err:
         logging.exception("organizer_clarify_handler failed: %s", err)
         await message.answer(
-            "Похоже, я не смог обработать уточнение.\n"
-            "Попробуйте написать проще (например: «до 250к, июль, 2 взрослых, без визы»).",
+            "Не получилось обработать уточнение.\n"
+            "Попробуйте написать проще, например: «до 250к, июль, 2 взрослых, без визы».",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -1250,7 +1544,84 @@ async def text_fallback_handler(message: Message) -> None:
     if is_help_text(message.text or ""):
         await help_handler(message)
         return
-    await message.answer("Выберите действие в меню.", reply_markup=main_menu_keyboard())
+
+    # Recovery path: if FSM state was lost (restart/multiple processes),
+    # continue active organizer/participant flow based on persisted event data.
+    recovered = get_latest_event_for_chat(message.chat.id)
+    if recovered:
+        event_code, event, role = recovered
+        event_number = event.get("event_number")
+        if role == "organizer":
+            existing_brief = event.get("brief") or {}
+            incoming = extract_brief_from_text(message.text or "")
+            brief = merge_brief(existing_brief, incoming)
+            EVENTS[event_code]["brief"] = brief
+            EVENTS[event_code]["organizer_dump"] = message.text or ""
+            touch_event(EVENTS[event_code])
+            save_events()
+
+            summary_text = format_brief_update_message(brief, event_number=event_number)
+            missing = missing_brief_fields(brief)
+            if not missing:
+                await message.answer(
+                    f"{summary_text}\n\n"
+                    "Отлично, базовых данных достаточно. Переходим к подключению участников.",
+                    reply_markup=main_menu_keyboard(),
+                )
+                await send_next_step_after_brief_by_event(message, event_code)
+                return
+
+            missing_text = "\n".join(f"- {m}" for m in missing)
+            await message.answer(
+                f"{summary_text}\n\n"
+                "🚨 <b>Уточните только это</b> (можно одним сообщением):\n"
+                f"{missing_text}",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
+        if role == "participant":
+            base_brief = event.get("brief") or {}
+            incoming = extract_brief_from_text(message.text or "")
+            participant_name = (
+                message.from_user.full_name if message.from_user and message.from_user.full_name else str(message.chat.id)
+            )
+            updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+            event["brief"] = updated_brief
+            updates = event.setdefault("participant_updates", {})
+            updates[chat_key(message.chat.id)] = {
+                "text": message.text or "",
+                "confirmed": False,
+                "name": participant_name,
+                "username": (message.from_user.username if message.from_user else None),
+                "updated_at": now_ts(),
+            }
+            participants = event.setdefault("participants", {})
+            if str(message.chat.id) in participants:
+                participants[str(message.chat.id)]["updated_at"] = now_ts()
+            touch_event(event)
+            save_events()
+
+            missing = missing_brief_fields(updated_brief)
+            missing_block = ""
+            if missing:
+                missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
+                missing_block = (
+                    "\n\n🚨 <b>Нужно уточнить</b>\n"
+                    f"{missing_text}"
+                )
+            await message.answer(
+                "Спасибо, добавила ваши вводные в бриф.\n\n"
+                f"{format_brief_for_participant(updated_brief, event_number=event_number)}\n\n"
+                f"Проверьте, пожалуйста: всё верно?{missing_block}",
+                reply_markup=participant_confirm_keyboard(),
+            )
+            return
+
+    await message.answer(
+        "Чтобы продолжить, выберите действие в меню ниже.",
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 async def main() -> None:
@@ -1280,6 +1651,12 @@ async def main() -> None:
     dp.callback_query.register(event_create_callback_handler, F.data == "event:create")
     dp.callback_query.register(event_open_callback_handler, F.data.startswith("event:open:"))
     dp.callback_query.register(event_invite_callback_handler, F.data == "event:invite")
+    dp.callback_query.register(help_continue_callback_handler, F.data == "help:continue")
+    dp.callback_query.register(help_parser_callback_handler, F.data == "help:parser")
+    dp.callback_query.register(help_clarify_callback_handler, F.data == "help:clarify")
+    dp.callback_query.register(help_link_callback_handler, F.data == "help:link")
+    dp.callback_query.register(help_my_events_callback_handler, F.data == "help:myevents")
+    dp.callback_query.register(help_report_callback_handler, F.data == "help:report")
     dp.callback_query.register(participant_confirm_callback_handler, F.data == "participant:confirm")
     dp.callback_query.register(participant_edit_callback_handler, F.data == "participant:edit")
 
