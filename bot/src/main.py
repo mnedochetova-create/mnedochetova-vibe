@@ -983,8 +983,8 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
 
     items.sort(
         key=lambda x: (
-            _action_priority(str(x.get("action_short") or "")),
             -int(x.get("updated_at", 0) or 0),
+            _action_priority(str(x.get("action_short") or "")),
         )
     )
     await message.answer(
