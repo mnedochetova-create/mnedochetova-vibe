@@ -1,0 +1,21 @@
+.git
+.github
+.cursor
+.vscode
+.pytest_cache
+.venv
+**/__pycache__/
+**/*.pyc
+.DS_Store
+
+# Docs and non-runtime files
+docs/
+output/
+scripts/
+
+# Local env files (do not bake secrets into images)
+bot/.env
+
+# Runtime data on developer machine (we still copy bot/data from repo)
+bot/data/events.json
+
