@@ -342,14 +342,55 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         if m:
             brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
 
-    # Flight duration: "до 5 часов"
-    m = re.search(r"(?:до|не\s*больше)\s*(\d{1,2})\s*(?:ч|час)", t)
+    # Flight duration: "до 5 часов", "перелёт до 6 часов", "не более 4 ч в воздухе"
+    m = re.search(r"(?:до|не\s*больше|не\s*более)\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b", t)
+    if not m:
+        m = re.search(
+            r"(?:перел[её]?т|пол[её]т)\s*(?:до|не\s*больше|не\s*более)?\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b",
+            t,
+        )
+    if not m:
+        m = re.search(
+            r"(\d{1,2})\s*(?:ч|час(?:ов|а)?)\s*(?:максимум|макс|не\s*больше)(?:\s*на\s*(?:перел[её]?т|пол[её]т))?",
+            t,
+        )
     if m:
         brief["flight_hours_max"] = int(m.group(1))
-    if "можно с пересад" in t or "пересадки можно" in t or "пересадки ок" in t or "пересадки норм" in t:
+
+    # Transfers / long-haul tolerance (explicit only)
+    if (
+        "можно с пересад" in t
+        or "пересадки можно" in t
+        or "пересадки ок" in t
+        or "пересадки норм" in t
+        or "допустимы пересад" in t
+        or "пересадки допустим" in t
+        or "с пересадк" in t
+        or "несколько пересад" in t
+        or "через пересад" in t
+        or "готовы к пересад" in t
+        or "пересадкам не против" in t
+        or "пересадки не проблем" in t
+    ):
         brief["transfers_allowed"] = True
-    if "без пересад" in t or "прямой рейс" in t:
+    if "без пересад" in t or "прямой рейс" in t or "прямой перел" in t or "прямой пол" in t:
         brief["transfers_allowed"] = False
+
+    # Явно «нет лимита по часам в воздухе» — считаем блок перелёта заполненным (без выдуманных часов)
+    if (
+        "нет ограничений по перел" in t
+        or "без ограничений по перел" in t
+        or "не важно сколько лететь" in t
+        or "не принципиально по перел" in t
+        or "сколько угодно лететь" in t
+        or "долго лететь можно" in t
+        or "нет лимита на перел" in t
+        or "перелет без огранич" in t
+        or "перелёт без огранич" in t
+        or "любая длительность перел" in t
+        or ("нет ограничений по времени" in t and ("перел" in t or "пол" in t or "в воздухе" in t))
+    ):
+        brief["flight_hours_unrestricted"] = True
 
     # Visa constraint
     if "без виз" in t:
@@ -392,13 +433,19 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         brief.setdefault("constraints_notes", [])
         if "есть разные мнения в группе" not in brief["constraints_notes"]:
             brief["constraints_notes"].append("есть разные мнения в группе — важно найти компромисс")
-    prefs = []
+    prefs: list[str] = []
     if "переплач" in t:
         prefs.append("ограничение: не переплачивать")
-    if "пересад" in t:
+    if (
+        "без длинных пересад" in t
+        or "не хочу длинных пересад" in t
+        or "избегаем долгих пересад" in t
+    ):
         prefs.append("ограничение: без длинных пересадок")
-    if prefs:
-        brief["constraints_notes"] = prefs
+    for note in prefs:
+        brief.setdefault("constraints_notes", [])
+        if note not in brief["constraints_notes"]:
+            brief["constraints_notes"].append(note)
 
     # Party preferences (очень легкий разбор ролей: папа/брат/жена брата/я)
     parties: Dict[str, Dict[str, Any]] = {}
@@ -414,7 +461,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             p.setdefault("notes", []).append("важен бюджет")
     if "брат" in t:
         b = ensure_party("брат_и_жена")
-        if "пересад" in t:
+        if "без длинных пересад" in t or "не хочу длинных пересад" in t:
             b.setdefault("constraints", []).append("без длинных пересадок")
         if "море" in t or "пляж" in t:
             b.setdefault("wants", []).append("на море")
@@ -543,7 +590,12 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append("Бюджет (хотя бы «до … ₽»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
-    if not brief.get("flight_hours_max") and ("transfers_allowed" not in brief):
+    flight_block_ok = (
+        bool(brief.get("flight_hours_max"))
+        or ("transfers_allowed" in brief)
+        or bool(brief.get("flight_hours_unrestricted"))
+    )
+    if not flight_block_ok:
         missing.append("Ограничение по перелёту (например, «до 5 часов»)")
     # Visas/documents: consider answered if user mentioned visa status/notes/passports
     documents_answered = (
@@ -642,6 +694,8 @@ def format_brief_unified(
 
     if brief.get("flight_hours_max"):
         flight_value = f"до {esc(brief['flight_hours_max'])} ч."
+    elif brief.get("flight_hours_unrestricted"):
+        flight_value = "ограничений по длительности перелёта нет"
     elif brief.get("transfers_allowed") is True:
         flight_value = "пересадки допустимы"
     elif brief.get("transfers_allowed") is False:
@@ -692,6 +746,12 @@ def format_brief_unified(
                 row.append("даты: " + ", ".join(esc(item) for item in prefs["months"]))
             if prefs.get("flight_hours_max"):
                 row.append(f"перелёт: до {esc(prefs['flight_hours_max'])} ч.")
+            elif prefs.get("flight_hours_unrestricted"):
+                row.append("перелёт: ограничений по длительности нет")
+            elif prefs.get("transfers_allowed") is True:
+                row.append("перелёт: пересадки допустимы")
+            elif prefs.get("transfers_allowed") is False:
+                row.append("перелёт: без пересадок")
             if "visa_required" in prefs:
                 row.append("визы: " + ("нужна" if prefs["visa_required"] else "без визы"))
             if prefs.get("passports_status"):
