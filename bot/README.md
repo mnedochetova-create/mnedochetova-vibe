@@ -43,19 +43,39 @@
 
 ## Деплой на Railway (GitHub → Railway)
 
-Самый простой путь для этого репозитория — деплой через Dockerfile в корне.
+Репозиторий собирается из **`Dockerfile` в корне** (контекст — весь репозиторий).
 
-1) В Railway создайте новый проект и подключите GitHub-репозиторий.  
-2) Railway автоматически соберёт образ из `Dockerfile` и запустит команду контейнера.
-3) В Railway → Variables добавьте:
-   - `BOT_TOKEN` (обязательно)
-   - `USE_LLM_BRIEF_PARSER` (`true/false`)
-   - `LLM_API_KEY` (если включён LLM-парсер)
-   - `LLM_PARSER_MODEL` (например, `gpt-4o-mini`)
+### Переменные в Railway (Variables)
+
+- `BOT_TOKEN` (обязательно)
+- `USE_LLM_BRIEF_PARSER` (`true/false`)
+- `LLM_API_KEY` (если включён LLM-парсер)
+- `LLM_PARSER_MODEL` (например, `gpt-4o-mini`)
 
 Важно:
-- `bot/.env` не используется в проде и не должен попадать в сборку.
+
+- `bot/.env` в проде не используется и не должен попадать в образ.
 - Файловое хранилище (`bot/data/events.json`) подходит для прототипа; для стабильного прод-режима лучше перейти на БД/volume.
+
+### Автодеплой: выберите один способ (не оба сразу)
+
+**Вариант A — только Railway (проще всего)**  
+
+1. В Railway: **New Project** → **Deploy from GitHub repo** → выберите этот репозиторий и ветку `main`.  
+2. Убедитесь, что сервис собирается по **`Dockerfile`** (root directory — корень репозитория, без `bot/` как root, если у вас не отдельный монорепо-сервис).  
+3. На каждый push в `main` Railway сам пересоберёт и задеплоит сервис.
+
+**Вариант B — GitHub Actions (тесты, затем `railway up`)**  
+
+В репозитории включён workflow `.github/workflows/deploy-railway.yml`: на push в `main` или ручной запуск (**Actions** → **Deploy bot (Railway)** → **Run workflow**) гоняется `pytest`, затем выкладка через Railway CLI.
+
+1. В Railway: **Project → Settings → Tokens** — создайте **Project token** (не персональный API token с другого экрана).  
+2. В GitHub: **Settings → Secrets and variables → Actions → New repository secret**:
+   - `RAILWAY_TOKEN` — вставьте project token;
+   - `RAILWAY_SERVICE_NAME` — **имя сервиса** в дашборде Railway (как подписано на карточке сервиса), не UUID из URL.  
+3. В Railway для этого сервиса **отключите** авто-деплой из GitHub (если он был включён), иначе на один push уйдут **две** сборки.
+
+Файл `.railwayignore` уменьшает размер архива для `railway up` (документация и прочее не нужны рантайму бота).
 
 ## Минимальные команды
 

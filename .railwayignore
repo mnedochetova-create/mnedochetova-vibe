@@ -1,0 +1,12 @@
+# Уменьшает архив для `railway up` (Railway CLI). Не влияет на Docker build context из репозитория GitHub.
+.cursor
+.vscode
+docs
+output
+scripts
+.github
+**/__pycache__
+**/*.pyc
+.venv
+.pytest_cache
+*.pdf
