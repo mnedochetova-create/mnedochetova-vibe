@@ -6,8 +6,14 @@
 # Имя сервиса по умолчанию: mnedochetova-vibe (см. bot/RAILWAY_PROJECT.md).
 # Переопределение: repository variable RAILWAY_SERVICE_NAME (не секрет).
 #
+# При падении деплоя:
+#   — в карточке запуска Actions → Summary появится блок с хвостом лога;
+#   — артефакт railway-deploy-log (скачать полный вывод);
+#   — опционально: variable RAILWAY_DEPLOY_OPEN_ISSUE=true → создаётся Issue с логом;
+#   — опционально: secret RAILWAY_FAILURE_WEBHOOK_URL → POST с ссылкой на run (Slack/Discord и т.п.).
+#
 # Важно: если в Railway уже включён деплой «из GitHub» для этого репозитория, отключите его
-# для этого сервиса — иначе на каждый push будут запускаться две параллельные сборки.
+# для этого сервиса — иначе на каждый push уйдут две параллельные сборки.
 name: Deploy bot (Railway)
 
 on:
@@ -45,6 +51,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -56,14 +65,97 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Upload and deploy
+        id: railway
+        continue-on-error: true
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE_NAME: ${{ vars.RAILWAY_SERVICE_NAME }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          LOG="${RUNNER_TEMP}/railway_deploy.log"
           if [ -z "${RAILWAY_TOKEN:-}" ]; then
             echo "::error::Добавьте секрет RAILWAY_TOKEN (см. комментарий в начале workflow и bot/RAILWAY_PROJECT.md)."
+            echo "Нет RAILWAY_TOKEN — деплой пропущен." >"$LOG"
             exit 1
           fi
           SERVICE_NAME="${RAILWAY_SERVICE_NAME:-mnedochetova-vibe}"
-          railway up --ci --service "${SERVICE_NAME}"
+          set +e
+          railway up --ci --service "${SERVICE_NAME}" 2>&1 | tee "$LOG"
+          CODE=${PIPESTATUS[0]}
+          exit "${CODE}"
+
+      - name: Upload Railway deploy log artifact
+        if: steps.railway.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-deploy-log
+          path: ${{ runner.temp }}/railway_deploy.log
+          if-no-files-found: ignore
+
+      - name: Job summary (лог для диагностики)
+        if: steps.railway.outcome == 'failure'
+        run: |
+          LOG="${RUNNER_TEMP}/railway_deploy.log"
+          {
+            echo "## Сбой деплоя Railway"
+            echo ""
+            echo "Запуск workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "Полный лог: скачайте артефакт **railway-deploy-log**."
+            echo ""
+            echo "<details><summary>Последние 200 строк лога</summary>"
+            echo ""
+            echo '```'
+            if [ -f "$LOG" ]; then tail -n 200 "$LOG"; else echo "(файл лога отсутствует)"; fi
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open GitHub issue on Railway failure (optional)
+        if: steps.railway.outcome == 'failure' && vars.RAILWAY_DEPLOY_OPEN_ISSUE == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs");
+            const logPath = `${process.env.RUNNER_TEMP}/railway_deploy.log`;
+            let log = "(нет файла лога)";
+            try {
+              if (fs.existsSync(logPath)) {
+                log = fs.readFileSync(logPath, "utf8");
+              }
+            } catch (e) {
+              log = String(e);
+            }
+            const max = 55000;
+            if (log.length > max) {
+              log = "…(обрезано)\n\n" + log.slice(-max);
+            }
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `[deploy/railway] сбой · ${context.sha.substring(0, 7)}`;
+            const body = `Workflow: ${runUrl}\n\nCommit: \`${context.sha}\`\n\n<details><summary>Railway log</summary>\n\n\`\`\`\n${log}\n\`\`\`\n\n</details>`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+            });
+
+      - name: Optional webhook (Slack / Discord и т.д.)
+        if: steps.railway.outcome == 'failure'
+        env:
+          WEBHOOK: ${{ secrets.RAILWAY_FAILURE_WEBHOOK_URL }}
+        run: |
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "RAILWAY_FAILURE_WEBHOOK_URL не задан — пропуск уведомления."
+            exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TITLE="Railway deploy failed: ${{ github.repository }}@${{ github.sha }}"
+          payload=$(node -e "console.log(JSON.stringify({content: process.argv[1] + '\n' + process.argv[2]}))" "$TITLE" "$RUN_URL")
+          curl -sS -X POST -H "Content-Type: application/json" -d "$payload" "$WEBHOOK" || true
+
+      - name: Propagate Railway failure
+        if: steps.railway.outcome == 'failure'
+        run: exit 1
