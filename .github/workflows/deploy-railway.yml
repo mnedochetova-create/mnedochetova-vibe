@@ -1,8 +1,10 @@
 # Деплой Telegram-бота на Railway после успешных тестов.
 #
-# Требуются секреты репозитория (Settings → Secrets and variables → Actions):
-#   RAILWAY_TOKEN         — Project Token из Railway: Project → Settings → Tokens
-#   RAILWAY_SERVICE_NAME  — имя сервиса в Railway (как в шапке карточки сервиса), не UUID из URL
+# Требуется секрет репозитория (Settings → Secrets and variables → Actions):
+#   RAILWAY_TOKEN — Project Token: Railway → Project → Settings → Tokens
+#
+# Имя сервиса по умолчанию: mnedochetova-vibe (см. bot/RAILWAY_PROJECT.md).
+# Переопределение: repository variable RAILWAY_SERVICE_NAME (не секрет).
 #
 # Важно: если в Railway уже включён деплой «из GitHub» для этого репозитория, отключите его
 # для этого сервиса — иначе на каждый push будут запускаться две параллельные сборки.
@@ -56,11 +58,12 @@ jobs:
       - name: Upload and deploy
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE_NAME: ${{ secrets.RAILWAY_SERVICE_NAME }}
+          RAILWAY_SERVICE_NAME: ${{ vars.RAILWAY_SERVICE_NAME }}
         run: |
           set -euo pipefail
-          if [ -z "${RAILWAY_TOKEN:-}" ] || [ -z "${RAILWAY_SERVICE_NAME:-}" ]; then
-            echo "::error::Добавьте секреты RAILWAY_TOKEN и RAILWAY_SERVICE_NAME (см. комментарий в начале workflow)."
+          if [ -z "${RAILWAY_TOKEN:-}" ]; then
+            echo "::error::Добавьте секрет RAILWAY_TOKEN (см. комментарий в начале workflow и bot/RAILWAY_PROJECT.md)."
             exit 1
           fi
-          railway up --ci --service "${RAILWAY_SERVICE_NAME}"
+          SERVICE_NAME="${RAILWAY_SERVICE_NAME:-mnedochetova-vibe}"
+          railway up --ci --service "${SERVICE_NAME}"

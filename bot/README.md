@@ -43,7 +43,9 @@
 
 ## Деплой на Railway (GitHub → Railway)
 
-Репозиторий собирается из **`Dockerfile` в корне** (контекст — весь репозиторий).
+Справка по вашему проекту Railway (ID, сервис, **без секретов**): `bot/RAILWAY_PROJECT.md`.
+
+Репозиторий собирается из **`Dockerfile` в корне** (контекст — весь репозиторий). В корне также **`railway.json`** — явная сборка через Dockerfile.
 
 ### Переменные в Railway (Variables)
 
@@ -70,12 +72,11 @@
 В репозитории включён workflow `.github/workflows/deploy-railway.yml`: на push в `main` или ручной запуск (**Actions** → **Deploy bot (Railway)** → **Run workflow**) гоняется `pytest`, затем выкладка через Railway CLI.
 
 1. В Railway: **Project → Settings → Tokens** — создайте **Project token** (не персональный API token с другого экрана).  
-2. В GitHub: **Settings → Secrets and variables → Actions → New repository secret**:
-   - `RAILWAY_TOKEN` — вставьте project token;
-   - `RAILWAY_SERVICE_NAME` — **имя сервиса** в дашборде Railway (как подписано на карточке сервиса), не UUID из URL.  
+2. В GitHub: **Settings → Secrets and variables → Actions** — секрет **`RAILWAY_TOKEN`** (project token).  
+   Имя сервиса для деплоя по умолчанию: **`mnedochetova-vibe`** (см. `bot/RAILWAY_PROJECT.md`). При переименовании сервиса задайте variable **`RAILWAY_SERVICE_NAME`** в GitHub.  
 3. В Railway для этого сервиса **отключите** авто-деплой из GitHub (если он был включён), иначе на один push уйдут **две** сборки.
 
-Файл `.railwayignore` уменьшает размер архива для `railway up` (документация и прочее не нужны рантайму бота).
+Файл `.railwayignore` уменьшает размер архива для `railway up` (документация и прочее не нужны рантайму бота). В корне репозитория **`railway.json`** явно задаёт сборку через **`Dockerfile`**.
 
 ## Минимальные команды
 
