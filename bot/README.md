@@ -107,3 +107,21 @@
 - Быстрый отчёт: `python3 bot/tests/test_brief_parsing.py`
 - Тест-сюита: `python3 -m pytest -q bot/tests/test_brief_parsing.py`
 
+## Логи в Telegram-группу
+
+Два формата (модуль `bot/src/interaction_log.py`):
+
+1. **Parser Quality Log** — сразу после разбора текста: ввод пользователя, бриф как в чате, пробелы после парсинга, snapshot JSON.
+2. **Session Summary** — в конце сессии (пауза 5 мин или этап «приглашение» / подтверждение участника): таймлайн навигации.
+
+Включение:
+
+1. Создайте **приватную** группу, добавьте бота (право писать сообщения).
+2. Узнайте `chat_id` группы (отрицательное число).
+3. В `.env` / Railway Variables:
+   - `LOG_GROUP_ENABLED=true`
+   - `LOG_GROUP_CHAT_ID=-100xxxxxxxxxx`
+   - `LOG_SESSION_IDLE_SEC=300` (опционально)
+
+Если переменные не заданы — логи в группу не отправляются.
+

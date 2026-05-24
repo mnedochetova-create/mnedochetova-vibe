@@ -28,6 +28,10 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+from interaction_log import flush_session_milestone, log_parse_result, log_session_action
+
+LAST_PARSER_MODE = "rules_only"
+
 
 def setup_logging() -> None:
     logging.basicConfig(
@@ -508,9 +512,46 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 def extract_brief_from_text(text: str) -> Dict[str, Any]:
     # Keep deterministic parser as baseline and optionally enrich via LLM parser.
     # If LLM parser is unavailable, behavior stays unchanged.
+    global LAST_PARSER_MODE
     rule_based = extract_brief_rule_based(text)
+    llm_enabled = (
+        os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true"
+        and bool(os.getenv("LLM_API_KEY", "").strip())
+    )
     llm_brief = parse_brief_with_llm(text)
+    if not llm_enabled:
+        LAST_PARSER_MODE = "rules_only"
+    elif llm_brief:
+        LAST_PARSER_MODE = "llm+rules"
+    else:
+        LAST_PARSER_MODE = "llm_fallback"
     return merge_brief(llm_brief, rule_based)
+
+
+async def emit_parse_log(
+    bot: Bot,
+    message: Message,
+    *,
+    role: str,
+    event_number: Optional[int],
+    step_label: str,
+    user_text: str,
+    brief: Dict[str, Any],
+    missing: List[str],
+    brief_html: str,
+) -> None:
+    await log_parse_result(
+        bot,
+        message,
+        role=role,
+        event_number=event_number,
+        step_label=step_label,
+        user_text=user_text,
+        brief_html=brief_html,
+        missing=missing,
+        merged_brief=brief,
+        parser_mode=LAST_PARSER_MODE,
+    )
 
 
 def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -904,6 +945,7 @@ async def start_handler(message: Message, state: Optional[FSMContext] = None) ->
         "Организатор — тот, кто создаёт событие: задаёт базовые параметры и приглашает участников.",
         reply_markup=welcome_keyboard(),
     )
+    await log_session_action(message.bot, message, "/start", role="organizer")
 
 
 async def help_handler(message: Message, state: Optional[FSMContext] = None) -> None:
@@ -933,6 +975,7 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
         f"{context_block}",
         reply_markup=help_keyboard(),
     )
+    await log_session_action(message.bot, message, "помощь")
 
 
 async def capabilities_handler(message: Message) -> None:
@@ -946,6 +989,7 @@ async def capabilities_handler(message: Message) -> None:
         "4) сохранить прогресс события, чтобы вы могли вернуться к нему позже.\n\n"
         "Этап рекомендаций по направлениям — следующий шаг развития."
     )
+    await log_session_action(message.bot, message, "что умеет бот")
 
 
 def _latest_event_activity_ts(event: Dict[str, Any]) -> int:
@@ -1053,6 +1097,7 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
         "Выберите событие, чтобы продолжить:",
         reply_markup=my_events_keyboard(items),
     )
+    await log_session_action(message.bot, message, "мои события")
 
 
 async def new_event_handler(message: Message, state: FSMContext) -> None:
@@ -1092,6 +1137,13 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         "Можно писать в свободной форме — я структурирую текст и соберу бриф.",
         reply_markup=main_menu_keyboard(),
     )
+    await log_session_action(
+        message.bot,
+        message,
+        "создание события",
+        role="organizer",
+        event_number=event_number,
+    )
 
 
 async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
@@ -1108,6 +1160,15 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
         "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
         reply_markup=invite_keyboard(),
     )
+    event = EVENTS.get(event_code) if event_code else None
+    await log_session_action(
+        message.bot,
+        message,
+        "показ приглашения",
+        role="organizer",
+        event_number=event.get("event_number") if event else None,
+    )
+    await flush_session_milestone(message.bot, message, "invite_shown")
 
 
 async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
@@ -1121,6 +1182,16 @@ async def send_next_step_after_brief_by_event(message: Message, event_code: str)
         "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
         reply_markup=invite_keyboard(),
     )
+    event = EVENTS.get(event_code) if event_code else None
+    await log_session_action(
+        message.bot,
+        message,
+        "показ приглашения",
+        role="organizer",
+        event_number=event.get("event_number") if event else None,
+    )
+    await flush_session_milestone(message.bot, message, "invite_shown")
+
 
 async def event_create_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     logging.info("Event create clicked chat_id=%s", callback.message.chat.id)
@@ -1390,6 +1461,13 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     await message.answer(
         f"{format_brief_for_participant(event_brief, event_number=event_number)}"
     )
+    await log_session_action(
+        message.bot,
+        message,
+        "вход участника",
+        role="participant",
+        event_number=event_number,
+    )
 
 
 async def participant_contribute_handler(message: Message, state: FSMContext) -> None:
@@ -1435,9 +1513,21 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
             "\n\n🚨 <b>Нужно уточнить</b>\n"
             f"{missing_text}"
         )
+    brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
+    await emit_parse_log(
+        message.bot,
+        message,
+        role="participant",
+        event_number=event_number if isinstance(event_number, int) else None,
+        step_label="пожелания участника",
+        user_text=message.text or "",
+        brief=updated_brief,
+        missing=missing,
+        brief_html=brief_html,
+    )
     await message.answer(
         "Спасибо, добавила ваши вводные в бриф.\n\n"
-        f"{format_brief_for_participant(updated_brief, event_number=event_number)}\n\n"
+        f"{brief_html}\n\n"
         f"Проверьте, пожалуйста: всё верно?{missing_block}",
         reply_markup=participant_confirm_keyboard(),
     )
@@ -1482,6 +1572,15 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
             f"{format_brief_for_participant(event.get('brief') or {}, event_number=event.get('event_number'))}",
         )
 
+    await log_session_action(
+        callback.bot,
+        callback.message,
+        "подтверждение брифа",
+        role="participant",
+        event_number=event.get("event_number"),
+    )
+    await flush_session_milestone(callback.bot, callback.message, "participant_confirmed")
+
 
 async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
@@ -1519,6 +1618,18 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
         missing = missing_brief_fields(brief)
 
         summary_text = format_brief_update_message(brief, event_number=EVENTS.get(event_code, {}).get("event_number"))
+        event_number = EVENTS.get(event_code, {}).get("event_number")
+        await emit_parse_log(
+            message.bot,
+            message,
+            role="organizer",
+            event_number=event_number if isinstance(event_number, int) else None,
+            step_label="отправка брифа",
+            user_text=text,
+            brief=brief,
+            missing=missing,
+            brief_html=summary_text,
+        )
 
         if not missing:
             await message.answer(
@@ -1565,8 +1676,22 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
         await state.update_data(brief=brief)
 
         missing = missing_brief_fields(brief)
+        event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
+        summary_text = format_brief_update_message(brief, event_number=event_number)
+        await emit_parse_log(
+            message.bot,
+            message,
+            role="organizer",
+            event_number=event_number if isinstance(event_number, int) else None,
+            step_label="уточнение брифа",
+            user_text=message.text or "",
+            brief=brief,
+            missing=missing,
+            brief_html=summary_text,
+        )
         if not missing:
             await message.answer(
+                f"{summary_text}\n\n"
                 "Отлично, спасибо! Данных достаточно. Переходим к подключению участников.",
                 reply_markup=main_menu_keyboard(),
             )
@@ -1575,6 +1700,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
         missing_text = "\n".join(f"- {m}" for m in missing)
         await message.answer(
+            f"{summary_text}\n\n"
             "🚨 <b>Осталось уточнить:</b>\n"
             f"{missing_text}\n\n"
             "Можно одним сообщением.",
@@ -1622,6 +1748,17 @@ async def text_fallback_handler(message: Message) -> None:
 
             summary_text = format_brief_update_message(brief, event_number=event_number)
             missing = missing_brief_fields(brief)
+            await emit_parse_log(
+                message.bot,
+                message,
+                role="organizer",
+                event_number=event_number if isinstance(event_number, int) else None,
+                step_label="уточнение брифа (recovery)",
+                user_text=message.text or "",
+                brief=brief,
+                missing=missing,
+                brief_html=summary_text,
+            )
             if not missing:
                 await message.answer(
                     f"{summary_text}\n\n"
@@ -1670,9 +1807,21 @@ async def text_fallback_handler(message: Message) -> None:
                     "\n\n🚨 <b>Нужно уточнить</b>\n"
                     f"{missing_text}"
                 )
+            brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
+            await emit_parse_log(
+                message.bot,
+                message,
+                role="participant",
+                event_number=event_number if isinstance(event_number, int) else None,
+                step_label="пожелания участника (recovery)",
+                user_text=message.text or "",
+                brief=updated_brief,
+                missing=missing,
+                brief_html=brief_html,
+            )
             await message.answer(
                 "Спасибо, добавила ваши вводные в бриф.\n\n"
-                f"{format_brief_for_participant(updated_brief, event_number=event_number)}\n\n"
+                f"{brief_html}\n\n"
                 f"Проверьте, пожалуйста: всё верно?{missing_block}",
                 reply_markup=participant_confirm_keyboard(),
             )

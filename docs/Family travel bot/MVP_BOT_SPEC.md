@@ -181,9 +181,8 @@
 - Один цикл пересборки по запросу.
 
 ### Этап 5. Hardening
-- Логирование событий.
+- Логи в Telegram-группу: Parser Quality Log + Session Summary (см. §13).
 - Обработка edge-cases.
-- Базовые метрики этапа.
 
 ## 11. Acceptance Criteria (Given/When/Then)
 
@@ -228,3 +227,28 @@
 - Голосование и кворум.
 - Алгоритм финального выбора направления.
 - Обработка tie-cases и эскалации.
+
+## 13. Логи в Telegram-группу
+
+Модуль: `bot/src/interaction_log.py`. Env: `LOG_GROUP_ENABLED`, `LOG_GROUP_CHAT_ID`, `LOG_SESSION_IDLE_SEC`.
+
+### Формат 1 — Parser Quality Log (сразу после парсинга)
+
+Отправляется при разборе текста организатора или участника.
+
+- **USER INPUT** — полный текст сообщения.
+- **PARSED BRIEF** — тот же HTML, что видит пользователь (`format_brief_update_message` / `format_brief_for_participant`).
+- **MISSING AFTER PARSE** — список из `missing_brief_fields`.
+- **MERGED EVENT BRIEF** — JSON snapshot без `context_raw`.
+- **parser:** `rules_only` | `llm+rules` | `llm_fallback`.
+
+### Формат 2 — Session Summary (конец сессии)
+
+Триггеры: idle ~5 мин, `invite_shown`, `participant_confirmed`.
+
+- User, role, event #, duration, action timeline, count parse steps.
+
+### Безопасность
+
+- Группа только для команды; в логах — тексты брифов пользователей.
+- Ошибка отправки лога не блокирует сценарий бота.
