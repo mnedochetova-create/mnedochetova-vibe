@@ -230,6 +230,8 @@
 
 ## 13. Логи в Telegram-группу
 
+Подробно: `Рынок и исследования/Логи_взаимодействия_в_Telegram-группу.md`.
+
 Модуль: `bot/src/interaction_log.py`. Env: `LOG_GROUP_ENABLED`, `LOG_GROUP_CHAT_ID`, `LOG_SESSION_IDLE_SEC`.
 
 ### Формат 1 — Parser Quality Log (сразу после парсинга)

@@ -1,13 +1,9 @@
 import asyncio
 import html
-import json
 import logging
 import os
 import secrets
 import time
-import urllib.error
-import urllib.request
-from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from aiogram import Bot, Dispatcher, F
@@ -28,9 +24,9 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+import brief_parser
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
-
-LAST_PARSER_MODE = "rules_only"
+from storage import load_events_from_file, save_events_to_file
 
 
 def setup_logging() -> None:
@@ -51,10 +47,6 @@ BOT_USERNAME: Optional[str] = None
 # Runtime storage (persisted to file).
 # event_code -> event dict
 EVENTS: Dict[str, Dict[str, Any]] = {}
-EVENTS_FILE = (Path(__file__).resolve().parent.parent / "data" / "events.json")
-PROMPTS_DIR = (Path(__file__).resolve().parent.parent / "prompts")
-BRIEF_PARSER_PROMPT_FILE = (PROMPTS_DIR / "brief_parser_system_prompt.md")
-_BRIEF_PARSER_PROMPT_CACHE: Optional[str] = None
 
 
 def new_event_code() -> str:
@@ -84,115 +76,20 @@ def touch_event(event: Dict[str, Any]) -> None:
 
 
 def get_brief_parser_prompt() -> str:
-    global _BRIEF_PARSER_PROMPT_CACHE
-    if _BRIEF_PARSER_PROMPT_CACHE is not None:
-        return _BRIEF_PARSER_PROMPT_CACHE
-    try:
-        _BRIEF_PARSER_PROMPT_CACHE = BRIEF_PARSER_PROMPT_FILE.read_text(encoding="utf-8")
-    except Exception as err:
-        logging.warning("Failed to load brief parser prompt: %s", err)
-        _BRIEF_PARSER_PROMPT_CACHE = ""
-    return _BRIEF_PARSER_PROMPT_CACHE
+    return brief_parser.get_brief_parser_prompt()
 
 
 def parse_brief_with_llm(text: str) -> Dict[str, Any]:
-    enabled = (os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true")
-    api_key = os.getenv("LLM_API_KEY")
-    if not enabled or not api_key:
-        return {}
-
-    prompt = get_brief_parser_prompt()
-    if not prompt:
-        return {}
-
-    model = os.getenv("LLM_PARSER_MODEL", "gpt-4o-mini")
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": (text or "").strip()},
-        ],
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-    }
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            raw = resp.read().decode("utf-8")
-        parsed = json.loads(raw)
-        content = parsed["choices"][0]["message"]["content"]
-        if not content:
-            return {}
-        result = json.loads(content)
-        if isinstance(result, dict):
-            return result
-        return {}
-    except (urllib.error.URLError, urllib.error.HTTPError, KeyError, ValueError, TimeoutError) as err:
-        logging.warning("LLM brief parser unavailable, fallback to rule-based parser: %s", err)
-        return {}
+    return brief_parser.parse_brief_with_llm(text)
 
 
 def load_events() -> None:
     global EVENTS
-    try:
-        if not EVENTS_FILE.exists():
-            EVENTS = {}
-            return
-        raw = json.loads(EVENTS_FILE.read_text(encoding="utf-8"))
-        loaded: Dict[str, Dict[str, Any]] = {}
-        for code, event in raw.items():
-            row = dict(event or {})
-            participants = row.get("participants") or {}
-            participant_updates = row.get("participant_updates") or {}
-            event_number = row.get("event_number")
-            # Backward compatibility for old storage where participants was a list/set.
-            if isinstance(participants, list):
-                participants = {
-                    str(chat_id): {"role": "participant", "joined_at": row.get("created_at")}
-                    for chat_id in participants
-                }
-            # Normalize participant_updates keys to string chat_id.
-            if isinstance(participant_updates, dict):
-                participant_updates = {
-                    str(chat_id): dict(payload or {})
-                    for chat_id, payload in participant_updates.items()
-                }
-            row["participants"] = participants
-            row["participant_updates"] = participant_updates
-            if not isinstance(event_number, int):
-                row["event_number"] = None
-            loaded[code] = row
-
-        # Backfill event_number for old records to keep stable numbering in UI.
-        numbered = [e.get("event_number") for e in loaded.values() if isinstance(e.get("event_number"), int)]
-        current_max = max(numbered) if numbered else 0
-        for code, event in loaded.items():
-            if not isinstance(event.get("event_number"), int):
-                current_max += 1
-                event["event_number"] = current_max
-        EVENTS = loaded
-    except Exception as err:
-        logging.warning("Failed to load events from disk: %s", err)
-        EVENTS = {}
+    EVENTS = load_events_from_file()
 
 
 def save_events() -> None:
-    try:
-        EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        EVENTS_FILE.write_text(
-            json.dumps(EVENTS, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as err:
-        logging.warning("Failed to save events to disk: %s", err)
+    save_events_to_file(EVENTS)
 
 
 def normalize_text(value: str) -> str:
@@ -262,270 +159,11 @@ async def handle_menu_shortcuts(message: Message) -> bool:
 
 
 def extract_brief_rule_based(text: str) -> Dict[str, Any]:
-    t = (text or "").lower()
-    brief: Dict[str, Any] = {}
-    # Raw context can be useful internally for debugging, but we should not echo it back to the user.
-    brief["context_raw"] = (text or "").strip()
-
-    # Budget: "до 250к", "250 000", "250тыс"
-    import re
-
-    budget_value = None
-    budget_suffix = ""
-
-    # Case A: explicit budget mention.
-    m_budget = re.search(
-        r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
-        t,
-    )
-    if m_budget:
-        budget_value = int(re.sub(r"\s+", "", m_budget.group(1)))
-        budget_suffix = (m_budget.group(2) or "").strip()
-    else:
-        # Case B: monetary phrase without word "бюджет", but with explicit money marker.
-        m_money = re.search(
-            r"до\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)",
-            t,
-        )
-        if m_money:
-            budget_value = int(re.sub(r"\s+", "", m_money.group(1)))
-            budget_suffix = (m_money.group(2) or "").strip()
-
-    if budget_value is not None:
-        num = budget_value
-        suffix = budget_suffix
-        if suffix in {"к", "т", "тыс", "тысяч"}:
-            num *= 1000
-        elif suffix.startswith("млн") or suffix.startswith("миллион"):
-            num *= 1_000_000
-        elif suffix in {"руб", "₽", "000"}:
-            # already in rubles / thousands encoded
-            pass
-        elif not suffix and num <= 1000:
-            # For travel chats, "бюджет 250" is usually shorthand for 250k.
-            num *= 1000
-        brief["budget_rub_max"] = num
-
-    # Adults / kids: "2 взрослых", "1 ребенок 6", "ребёнок 6 лет"
-    m = re.search(r"(\d+)\s*взросл", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*девуш", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*коллег", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*(?:дет|реб)", t)
-    if m:
-        brief["kids_count"] = int(m.group(1))
-    m = re.search(r"(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)", t)
-    if m:
-        brief["kid_age"] = int(m.group(1))
-
-    # Dates/months: very lightweight capture
-    months = [
-        "январ", "феврал", "март", "апрел", "май", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"
-    ]
-    for mon in months:
-        if mon in t:
-            brief.setdefault("months", []).append(mon)
-
-    # Explicit date ranges: "10-15 июля", "с 10 по 15", "10.07-15.07"
-    m = re.search(r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\s*[-–]\s*(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?", t)
-    if m:
-        brief["date_range_raw"] = m.group(0)
-    m = re.search(r"(?:с\s*)?(\d{1,2})\s*(?:по|[-–])\s*(\d{1,2})\s*(январ[ья]|феврал[ья]|март[а]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[а]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])", t)
-    if m:
-        brief["date_range_raw"] = m.group(0)
-    m = re.search(r"(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(?:дн|дней|дня)", t)
-    if m:
-        brief["trip_duration_days_raw"] = f"{m.group(1)}-{m.group(2)} дней"
-    else:
-        m = re.search(r"(\d{1,2})\s*(?:дн|дней|дня)", t)
-        if m:
-            brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
-
-    # Flight duration: "до 5 часов", "перелёт до 6 часов", "не более 4 ч в воздухе"
-    m = re.search(r"(?:до|не\s*больше|не\s*более)\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b", t)
-    if not m:
-        m = re.search(
-            r"(?:перел[её]?т|пол[её]т)\s*(?:до|не\s*больше|не\s*более)?\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b",
-            t,
-        )
-    if not m:
-        m = re.search(
-            r"(\d{1,2})\s*(?:ч|час(?:ов|а)?)\s*(?:максимум|макс|не\s*больше)(?:\s*на\s*(?:перел[её]?т|пол[её]т))?",
-            t,
-        )
-    if m:
-        brief["flight_hours_max"] = int(m.group(1))
-
-    # Transfers / long-haul tolerance (explicit only)
-    if (
-        "можно с пересад" in t
-        or "пересадки можно" in t
-        or "пересадки ок" in t
-        or "пересадки норм" in t
-        or "допустимы пересад" in t
-        or "пересадки допустим" in t
-        or "с пересадк" in t
-        or "несколько пересад" in t
-        or "через пересад" in t
-        or "готовы к пересад" in t
-        or "пересадкам не против" in t
-        or "пересадки не проблем" in t
-    ):
-        brief["transfers_allowed"] = True
-    if "без пересад" in t or "прямой рейс" in t or "прямой перел" in t or "прямой пол" in t:
-        brief["transfers_allowed"] = False
-
-    # Явно «нет лимита по часам в воздухе» — считаем блок перелёта заполненным (без выдуманных часов)
-    if (
-        "нет ограничений по перел" in t
-        or "без ограничений по перел" in t
-        or "не важно сколько лететь" in t
-        or "не принципиально по перел" in t
-        or "сколько угодно лететь" in t
-        or "долго лететь можно" in t
-        or "нет лимита на перел" in t
-        or "перелет без огранич" in t
-        or "перелёт без огранич" in t
-        or "любая длительность перел" in t
-        or ("нет ограничений по времени" in t and ("перел" in t or "пол" in t or "в воздухе" in t))
-    ):
-        brief["flight_hours_unrestricted"] = True
-
-    # Visa constraint
-    if "без виз" in t:
-        brief["visa_required"] = False
-    elif "виза" in t:
-        brief["visa_required"] = True
-
-    # Passports (загранпаспорта)
-    if "загран" in t or "заграничн" in t:
-        # If passports are discussed, visas/documents are in scope.
-        brief.setdefault("documents_discussed", True)
-        # coarse status
-        if "нет" in t and ("загран" in t or "заграничн" in t):
-            brief["passports_status"] = "не у всех есть"
-        if "есть" in t and ("загран" in t or "заграничн" in t):
-            brief["passports_status"] = "есть"
-        if "срок" in t and ("загран" in t or "заграничн" in t):
-            brief.setdefault("passports_notes", [])
-            brief["passports_notes"].append("проверить срок действия загранпаспорта")
-
-    # Visa nuances (France/Schengen)
-    if "шенген" in t or "шэнген" in t or "франц" in t:
-        brief.setdefault("visa_notes", [])
-        brief.setdefault("documents_discussed", True)
-        # Schengen/France implies visa topic even if word "виза" isn't used.
-        brief.setdefault("visa_required", True)
-        if "франц" in t:
-            brief["visa_notes"].append("направление/виза: Франция (Шенген)")
-        elif "шенген" in t or "шэнген" in t:
-            brief["visa_notes"].append("виза: Шенген")
-    if "виза есть" in t or "виза готов" in t:
-        brief.setdefault("documents_discussed", True)
-        brief["visa_status"] = "есть"
-    if "виза нет" in t or "визы нет" in t or "делаем визу" in t or "оформляем визу" in t:
-        brief.setdefault("documents_discussed", True)
-        brief["visa_status"] = "нужно оформить"
-
-    # Conflict signal (don't store/echo the full user text)
-    if "не можем" in t or "не получается" in t or "спор" in t or "конфликт" in t:
-        brief.setdefault("constraints_notes", [])
-        if "есть разные мнения в группе" not in brief["constraints_notes"]:
-            brief["constraints_notes"].append("есть разные мнения в группе — важно найти компромисс")
-    prefs: list[str] = []
-    if "переплач" in t:
-        prefs.append("ограничение: не переплачивать")
-    if (
-        "без длинных пересад" in t
-        or "не хочу длинных пересад" in t
-        or "избегаем долгих пересад" in t
-    ):
-        prefs.append("ограничение: без длинных пересадок")
-    for note in prefs:
-        brief.setdefault("constraints_notes", [])
-        if note not in brief["constraints_notes"]:
-            brief["constraints_notes"].append(note)
-
-    # Party preferences (очень легкий разбор ролей: папа/брат/жена брата/я)
-    parties: Dict[str, Dict[str, Any]] = {}
-    def ensure_party(name: str) -> Dict[str, Any]:
-        parties.setdefault(name, {})
-        return parties[name]
-
-    if "папа" in t:
-        p = ensure_party("папа")
-        if "переплач" in t or "дорого" in t:
-            p["constraint"] = "не переплачивать"
-        if "бюджет" in t:
-            p.setdefault("notes", []).append("важен бюджет")
-    if "брат" in t:
-        b = ensure_party("брат_и_жена")
-        if "без длинных пересад" in t or "не хочу длинных пересад" in t:
-            b.setdefault("constraints", []).append("без длинных пересадок")
-        if "море" in t or "пляж" in t:
-            b.setdefault("wants", []).append("на море")
-    if "франц" in t or "во францию" in t:
-        me = ensure_party("организатор")
-        me.setdefault("wants", []).append("Франция")
-
-    if parties:
-        brief["party_preferences"] = parties
-
-    # Climate/type
-    if "море" in t or "пляж" in t:
-        brief["climate"] = "море/пляж"
-    if "горы" in t:
-        brief["climate"] = "горы"
-    if "экскурс" in t or "музе" in t:
-        brief["trip_type"] = "экскурсии/город"
-    if "all inclusive" in t or "оллинклюзив" in t or "всё включено" in t:
-        brief["trip_type"] = "всё включено"
-
-    # Specific activity/place preferences often mentioned by participants.
-    activity_preferences = []
-    if "ази" in t:
-        activity_preferences.append("предпочтение по направлению: Азия")
-    if "европ" in t:
-        activity_preferences.append("предпочтение по направлению: Европа")
-    if "песчан" in t and ("пляж" in t or "море" in t):
-        activity_preferences.append("песчаный пляж")
-    if "достопримеч" in t or "экскурс" in t:
-        activity_preferences.append("поездки к достопримечательностям")
-    if (
-        ("машин" in t or "авто" in t or "на машине" in t)
-        and ("достопримеч" in t or "экскурс" in t or "посмотреть" in t or "покат" in t)
-    ):
-        activity_preferences.append("поездки на машине к достопримечательностям")
-    if "ресторан" in t or "гастроном" in t or "кафе" in t:
-        activity_preferences.append("рестораны и локальная еда")
-    if activity_preferences:
-        brief["activity_preferences"] = activity_preferences
-
-    return brief
+    return brief_parser.extract_brief_rule_based(text)
 
 
 def extract_brief_from_text(text: str) -> Dict[str, Any]:
-    # Keep deterministic parser as baseline and optionally enrich via LLM parser.
-    # If LLM parser is unavailable, behavior stays unchanged.
-    global LAST_PARSER_MODE
-    rule_based = extract_brief_rule_based(text)
-    llm_enabled = (
-        os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true"
-        and bool(os.getenv("LLM_API_KEY", "").strip())
-    )
-    llm_brief = parse_brief_with_llm(text)
-    if not llm_enabled:
-        LAST_PARSER_MODE = "rules_only"
-    elif llm_brief:
-        LAST_PARSER_MODE = "llm+rules"
-    else:
-        LAST_PARSER_MODE = "llm_fallback"
-    return merge_brief(llm_brief, rule_based)
+    return brief_parser.extract_brief_from_text(text)
 
 
 async def emit_parse_log(
@@ -550,35 +188,12 @@ async def emit_parse_log(
         brief_html=brief_html,
         missing=missing,
         merged_brief=brief,
-        parser_mode=LAST_PARSER_MODE,
+        parser_mode=brief_parser.get_last_parser_mode(),
     )
 
 
 def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base or {})
-    for k, v in (incoming or {}).items():
-        if v is None:
-            continue
-        if k == "months":
-            out.setdefault("months", [])
-            for item in v:
-                if item not in out["months"]:
-                    out["months"].append(item)
-            continue
-        if k in {"visa_notes", "constraints_notes", "activity_preferences"}:
-            out.setdefault(k, [])
-            for item in v:
-                if item not in out[k]:
-                    out[k].append(item)
-            continue
-        if k in {"passports_notes"}:
-            out.setdefault(k, [])
-            for item in v:
-                if item not in out[k]:
-                    out[k].append(item)
-            continue
-        out[k] = v
-    return out
+    return brief_parser.merge_brief(base, incoming)
 
 
 def merge_participant_into_brief(
@@ -586,75 +201,11 @@ def merge_participant_into_brief(
     incoming: Dict[str, Any],
     participant_name: str,
 ) -> Dict[str, Any]:
-    # Participant input should enrich the event brief, but should not blindly overwrite
-    # organizer's already fixed core fields (especially budget and trip composition).
-    out = dict(base or {})
-    immutable_if_set = {
-        "budget_rub_max",
-        "adults",
-        "kids_count",
-        "kid_age",
-        "months",
-        "date_range_raw",
-        "flight_hours_max",
-        "visa_required",
-        "visa_status",
-        "passports_status",
-        "climate",
-        "trip_type",
-    }
-
-    for k, v in (incoming or {}).items():
-        if v is None:
-            continue
-        if k in {"months", "visa_notes", "constraints_notes", "passports_notes", "activity_preferences"}:
-            out.setdefault(k, [])
-            for item in v:
-                if item not in out[k]:
-                    out[k].append(item)
-            continue
-        if k in immutable_if_set and k in out and out.get(k):
-            continue
-        out[k] = v
-
-    # Keep participant-specific preference visible without rewriting organizer base fields.
-    out.setdefault("participant_preferences", {})
-    out["participant_preferences"][participant_name] = incoming
-    return out
+    return brief_parser.merge_participant_into_brief(base, incoming, participant_name)
 
 
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
-    missing: list[str] = []
-    if not brief.get("months"):
-        missing.append("Окна дат (месяц/период) или гибкость")
-    if not brief.get("budget_rub_max"):
-        missing.append("Бюджет (хотя бы «до … ₽»)")
-    if not brief.get("adults") and not brief.get("kids_count"):
-        missing.append("Кто едет (взрослые/дети)")
-    flight_block_ok = (
-        bool(brief.get("flight_hours_max"))
-        or ("transfers_allowed" in brief)
-        or bool(brief.get("flight_hours_unrestricted"))
-    )
-    if not flight_block_ok:
-        missing.append("Ограничение по перелёту (например, «до 5 часов»)")
-    # Visas/documents: consider answered if user mentioned visa status/notes/passports
-    documents_answered = (
-        ("visa_required" in brief)
-        or bool(brief.get("visa_status"))
-        or bool(brief.get("visa_notes"))
-        or bool(brief.get("passports_status"))
-        or bool(brief.get("passports_notes"))
-        or bool(brief.get("documents_discussed"))
-    )
-    if not documents_answered:
-        missing.append("Визы/документы (например, «без визы» / «нужен Шенген» / «загранпаспорта у всех есть»)")
-    # If visa is relevant, passports are too
-    if brief.get("visa_required") is True and not brief.get("passports_status"):
-        missing.append("Загранпаспорта у участников (есть ли у всех / срок действия)")
-    if not brief.get("climate") and not brief.get("trip_type"):
-        missing.append("Климат или тип отдыха (море/горы/город/санаторий и т.п.)")
-    return missing
+    return brief_parser.missing_brief_fields(brief)
 
 
 def format_brief_unified(
@@ -1149,8 +700,6 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
 async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     event_code = data.get("event_code")
-    event = EVENTS.get(event_code) if event_code else None
-    invite_link = event.get("invite_link") if event else None
 
     await message.answer(
         "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
@@ -1172,8 +721,6 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
 
 
 async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
-    event = EVENTS.get(event_code) if event_code else None
-    invite_link = event.get("invite_link") if event else None
     await message.answer(
         "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
         "Что сделать вам:\n"
@@ -1428,12 +975,18 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
         return
 
     participants = event.setdefault("participants", {})
-    participants[str(message.chat.id)] = {
-        "role": "participant",
-        "name": (message.from_user.full_name if message.from_user else str(message.chat.id)),
-        "username": (message.from_user.username if message.from_user else None),
-        "joined_at": now_ts(),
-    }
+    participant_id = str(message.chat.id)
+    participant_row = participants.get(participant_id) or {}
+    participant_row.setdefault("role", "participant")
+    participant_row.setdefault("joined_at", now_ts())
+    participant_row["name"] = (
+        message.from_user.full_name if message.from_user else str(message.chat.id)
+    )
+    participant_row["username"] = (
+        message.from_user.username if message.from_user else None
+    )
+    participant_row["updated_at"] = now_ts()
+    participants[participant_id] = participant_row
     save_events()
     event_brief = event.get("brief") or {}
     event_number = event.get("event_number")

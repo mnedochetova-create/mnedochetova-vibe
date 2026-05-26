@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Правый ТБС — психосоматика и исповедь</title>
+  <style>
+    @font-face {
+      font-family: "Styrene ALC";
+      src:
+        local("Styrene ALC Light"),
+        url("../Артем Соколов/Предложение_аудит_Travel_Lifestyle_FO/assets/fonts/StyreneALC-Light.woff2") format("woff2"),
+        url("../Артем Соколов/Предложение_аудит_Travel_Lifestyle_FO/assets/fonts/StyreneALC-Light.otf") format("opentype");
+      font-weight: 300;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #f8f7f5;
+      --text: #1a1a1a;
+      --muted: #5a5a5a;
+      --accent: #2c4a3e;
+      --rule: #1a1a1a;
+      --line: #e4e2de;
+      --table-head: #eef0ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Styrene ALC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      font-weight: 300;
+      background: #ececec;
+      color: var(--text);
+      line-height: 1.28;
+      font-size: 7.5pt;
+      -webkit-font-smoothing: antialiased;
+    }
+    .doc { padding: 8px 0 12px; }
+    .page {
+      width: 210mm;
+      height: 297mm;
+      min-height: 297mm;
+      max-height: 297mm;
+      margin: 0 auto 8px;
+      background: var(--bg);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+      page-break-after: always;
+      break-after: page;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .page:last-child { page-break-after: auto; break-after: auto; margin-bottom: 0; }
+    .inner {
+      padding: 9mm 11mm 8mm;
+      max-width: 188mm;
+      margin: 0 auto;
+      height: 100%;
+      box-sizing: border-box;
+    }
+    .hero {
+      padding-bottom: 6px;
+      margin-bottom: 7px;
+      border-bottom: 1.5px solid var(--rule);
+    }
+    .kicker {
+      font-size: 6pt;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 3px;
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 13.5pt;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.12;
+      color: var(--accent);
+    }
+    .lead {
+      margin: 0;
+      font-size: 7pt;
+      line-height: 1.3;
+      color: var(--muted);
+    }
+    h2 {
+      margin: 7px 0 4px;
+      font-size: 8.5pt;
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.01em;
+      line-height: 1.2;
+    }
+    h3 {
+      margin: 6px 0 3px;
+      font-size: 7.5pt;
+      font-weight: 600;
+    }
+    p { margin: 0 0 4px; }
+    ul, ol { margin: 0 0 5px; padding-left: 1.15em; }
+    li { margin-bottom: 2px; line-height: 1.28; }
+    .note {
+      background: var(--bg-subtle);
+      border-left: 2px solid var(--accent);
+      padding: 4px 6px;
+      margin: 5px 0 6px;
+      font-size: 6.5pt;
+      line-height: 1.3;
+      color: var(--muted);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 3px 0 5px;
+      font-size: 6.25pt;
+      line-height: 1.26;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 2px 3px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: var(--table-head);
+      font-weight: 600;
+      font-size: 6pt;
+    }
+    .col-num { width: 3.5%; text-align: center; }
+    .table-main td:nth-child(2) { width: 22%; }
+    .table-main td:nth-child(3) { width: 28%; }
+    .table-main td:nth-child(4) { width: 46%; }
+    .confession {
+      background: #f4f6f4;
+      border: 1px solid var(--line);
+      padding: 5px 7px;
+      margin: 4px 0 5px;
+      font-size: 6.5pt;
+      font-style: italic;
+      line-height: 1.32;
+    }
+    .confession br { line-height: 0.6; }
+    .sources {
+      font-size: 6pt;
+      line-height: 1.28;
+      color: var(--muted);
+      margin-top: 5px;
+      padding-top: 4px;
+      border-top: 1px solid var(--line);
+    }
+    .page-title {
+      font-size: 6pt;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin: 0 0 5px;
+    }
+    .page-1 h2:first-of-type { margin-top: 4px; }
+    .page-1 .sources { margin-top: 4px; padding-top: 3px; }
+    .page-3 h2 { margin: 5px 0 3px; }
+    .page-3 .confession { margin: 3px 0; padding: 4px 6px; font-size: 6.25pt; }
+    .page-3 table { margin: 2px 0 4px; }
+    .page-3 ul.sources li { margin-bottom: 1px; }
+    @media print {
+      body { background: #fff; font-size: 7.5pt; }
+      .doc { padding: 0; }
+      .page {
+        box-shadow: none;
+        margin: 0;
+        width: 210mm;
+        height: 297mm;
+        overflow: hidden;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <section class="page page-1">
+    <div class="inner">
+      <header class="hero">
+        <p class="kicker">Целительство · свод · стр. 1</p>
+        <h1>Артроз правого тазобедренного сустава</h1>
+        <p class="lead">Психосоматика (открытые источники) и соответствие грехам православной исповеди. Документ для самообследования и подготовки к таинству Покаяния. Не заменяет медицинскую диагностику и личную исповедь у священника.</p>
+      </header>
+
+      <p class="note"><strong>Оговорка.</strong> Психосоматические трактовки — метафизические модели (Хей, Виилма, Бурбо, Хамер, Евдокименко и др.). Исповедь — таинство Церкви: называют конкретные грехи, а не «диагноз по суставу».</p>
+
+      <h2>1. Топ‑10 психосоматических аспектов (правый ТБС)</h2>
+      <table>
+        <thead>
+          <tr><th class="col-num">№</th><th>Аспект</th><th>Основные авторы / смысл</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="col-num">1</td><td>Страх идти вперёд, нерешительность</td><td>Хей, Бурбо — бёдра несут тело вперёд; страх важного решения</td></tr>
+          <tr><td class="col-num">2</td><td>Самообесценивание («не справлюсь», «не ценят»)</td><td>Хамер, Козлов — конфликт самообесценивания; коксартроз справа — недооценка на работе</td></tr>
+          <tr><td class="col-num">3</td><td>Работа, конкуренция, нет удовлетворения от дел</td><td>Бурбо, обзоры — правое бедро: сфера дел, доказательство значимости</td></tr>
+          <tr><td class="col-num">4</td><td>Жёсткость в материально‑бытовом, злость на себя/семью</td><td>Виилма — правый ТБС: неуступчивость в экономике, злость на себя и семью</td></tr>
+          <tr><td class="col-num">5</td><td>«Ноги не несут» — не иду туда, куда надо</td><td>Евдокименко — работа, дом, нежелание общения</td></tr>
+          <tr><td class="col-num">6</td><td>Подавленный гнев при внешней мягкости</td><td>Евдокименко, psycop.ru — доброжелательность снаружи, гнев внутри</td></tr>
+          <tr><td class="col-num">7</td><td>Жёсткие правила, контроль, негибкость</td><td>Бурбо, Торсунов — «закостеневшие» убеждения, страх перемен</td></tr>
+          <tr><td class="col-num">8</td><td>Гонка за успехом, соревнование</td><td>psycop.ru — правый сустав: конкуренция на работе</td></tr>
+          <tr><td class="col-num">9</td><td>Безрадостный труд, трудоголизм без смысла</td><td>psycop.ru — разочарование от труда, упрямство</td></tr>
+          <tr><td class="col-num">10</td><td>Потеря опоры (таз, бедро)</td><td>Хей — основание тела; Синельников — «дом», равновесие</td></tr>
+        </tbody>
+      </table>
+
+      <h2>2. Топ‑7 наиболее явных грехов (ядро для исповеди)</h2>
+      <table>
+        <thead>
+          <tr><th>Приор.</th><th>Грех</th><th>Связь с правым ТБС</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Уныние, малодушие, отчаяние, потеря надежды на Бога</td><td>Страх шага вперёд, «ноги не несут»</td></tr>
+          <tr><td>2</td><td>Гнев, раздражительность, памятозлобие (часто скрытые)</td><td>Подавленная злость при внешней мягкости</td></tr>
+          <tr><td>3</td><td>Зависть, честолюбие, превозношение</td><td>Конкуренция, недооценённость на работе</td></tr>
+          <tr><td>4</td><td>Осуждение людей, злословие</td><td>Прямая формула общей исповеди</td></tr>
+          <tr><td>5</td><td>Упрямство, нежелание уступить, самонравие, самооправдание</td><td>Жёсткость, контроль</td></tr>
+          <tr><td>6</td><td>Сребролюбие, скупость, гнев в быту</td><td>Линия Виилмы: экономика семьи</td></tr>
+          <tr><td>7</td><td>Лицемерие, умаление грехов, обвинение других</td><td>Маска «хорошего человека»</td></tr>
+        </tbody>
+      </table>
+
+      <p class="sources">Источники психосоматики: Л. Хей, Л. Виилма, Л. Бурбо, Р. Хамер, В. Синельников, Е. Евдокименко, С. Козлов. Исповедь: «Полный православный молитвослов», свт. Димитрий Ростовский, пособие УПЦ.</p>
+    </div>
+  </section>
+
+  <section class="page">
+    <div class="inner">
+      <p class="page-title">Целительство · стр. 2</p>
+      <h2>3. Таблица: психосоматика ↔ грехи ↔ формулировки для исповеди</h2>
+      <table class="table-main">
+        <thead>
+          <tr>
+            <th class="col-num">№</th>
+            <th>Психосоматика</th>
+            <th>Явные грехи</th>
+            <th>Формулировка для исповеди</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="col-num">1</td>
+            <td>Страх идти вперёд</td>
+            <td>Уныние; малодушие; отчаяние; непонуждение к добру</td>
+            <td>«Каюсь в унынии и малодушии: долго не решался(лась)… боялся(лась), что не выйдет. Отчаивался(лась). Ленился(лась) делать доброе, на которое звала совесть.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">2</td>
+            <td>«Не справлюсь», «не ценят»</td>
+            <td>Ропот; самооправдание; маловерие</td>
+            <td>«Каюсь в ропоте: думал(а), что меня не ценят… Оправдывал(а) себя. Мало верил(а), что Господь поправит.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">3</td>
+            <td>Работа, конкуренция</td>
+            <td>Зависть; честолюбие; превозношение; сребролюбие</td>
+            <td>«Каюсь в зависти к… В честолюбии доказывал(а) значимость. Превозносился(лась). Любил(а) успех больше смирения.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">4</td>
+            <td>Жёсткость в быту, злость на семью</td>
+            <td>Гнев; скупость; проклятие ближних; нарушение мира в доме</td>
+            <td>«Каюсь в гневе из‑за денег и быта… Был(а) скуп(а). Ругался(лась) / срывал(а) мир в доме.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">5</td>
+            <td>«Ноги не несут»</td>
+            <td>Лень; нерадение; ропот</td>
+            <td>«Каюсь в лени: не хотел(а) идти / делать… Тянул(а) время. Роптал(а) вместо смиренного исполнения.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">6</td>
+            <td>Скрытый гнев</td>
+            <td>Гнев; памятозлобие; лицемерие; непримирение</td>
+            <td>«Внешне спокойный(ая), внутри злился(лась). Скрытый гнев на… Не примирился(лась).»</td>
+          </tr>
+          <tr>
+            <td class="col-num">7</td>
+            <td>Упрямство, контроль</td>
+            <td>Упрямство; самонравие; прекословие</td>
+            <td>«Каюсь в упрямстве: не уступал(а), настаивал(а) на своём, спорил(а). Жил(а) по своей воле.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">8</td>
+            <td>Гонка за успехом</td>
+            <td>Зависть; честолюбие; злорадство; человекоугодие</td>
+            <td>«Жил(а) в соревновании, завидовал(а)… Боялся(лась) опозориться перед людьми больше, чем согрешить перед Богом.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">9</td>
+            <td>Безрадостный труд</td>
+            <td>Ропот; уныние; небрежение к молитве</td>
+            <td>«Каюсь в ропоте на труд… Унывал(а). Ленился(лась) молиться, хотя знал(а), что надо.»</td>
+          </tr>
+          <tr>
+            <td class="col-num">10</td>
+            <td>Потеря опоры</td>
+            <td>Немилосердие; неблагодарность; окаменение сердца</td>
+            <td>«Каюсь в жестокости сердца: не помог(ла)… Не благодарил(а) Бога. Мало жалел(а) о грехах.»</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="page page-3">
+    <div class="inner">
+      <p class="page-title">Целительство · стр. 3</p>
+      <h2>4. Компактный блок для исповеди (1–2 минуты)</h2>
+      <div class="confession">
+        Господи, каюсь, что долго был(а) в <strong>унынии и малодушии</strong> — боялся(лась)…, <strong>мало надеялся(лась) на Тебя</strong>.<br>
+        В <strong>зависти и честолюбии</strong> — завидовал(ла)…, хотел(а) доказать значимость.<br>
+        В <strong>скрытом гневе</strong> на… — внешне терпел(а), внутри злился(лась); <strong>не примирился(лась)</strong>.<br>
+        В <strong>упрямстве и самонравии</strong> — не уступал(а), жил(а) по своей воле.<br>
+        <strong>Осуждал(а)</strong>… в мыслях и словах. В <strong>скупости / сребролюбии</strong> (если актуально).<br>
+        <strong>Роптал(а)</strong> на жизнь и на Промысл Твой. На исповеди <strong>умалял(а) грехи</strong> или <strong>винил(а) других</strong>. Жалею, прошу прощения и сил не повторять.
+      </div>
+
+      <h2>5. Три вопроса перед исповедью</h2>
+      <ol>
+        <li><strong>Куда я не хотел(а) «идти»?</strong> — работа, дом, разговор, важное решение.</li>
+        <li><strong>На кого злюсь, но не говорю?</strong> — и кому завидую?</li>
+        <li><strong>Где был(а) упрям(а) и «прав(а)»?</strong> — в семье, деньгах, отношении к родителям / начальству.</li>
+      </ol>
+
+      <h2>6. Чего избегать на исповеди</h2>
+      <table>
+        <thead><tr><th>Не так</th><th>Лучше так</th></tr></thead>
+        <tbody>
+          <tr><td>«У меня артроз — значит, завидую»</td><td>«Завидовал(а) коллеге N…, в мыслях желал(а) неудачи»</td></tr>
+          <tr><td>«Психосоматика — скупость»</td><td>«Был(а) скуп(а) к…, не помог(ла) бедному»</td></tr>
+          <tr><td>«Я плохой во всём»</td><td>Конкретные грехи: кто, когда, что сделал(а)</td></tr>
+        </tbody>
+      </table>
+
+      <h2>7. Источники исповеди (полные тексты)</h2>
+      <ul class="sources" style="list-style: none; padding: 0;">
+        <li>Общая исповедь — molitvoslov.com/text168.htm</li>
+        <li>Генеральное исповедание — azbyka.ru (свт. Димитрий Ростовский)</li>
+        <li>Перечень по 10 заповедям (PDF) — ru.pravoslavie.church</li>
+        <li>Молитва перед исповедью (прп. Симеон Новый Богослов) — azbyka.ru/molitvoslov</li>
+      </ul>
+
+      <p class="note" style="margin-top: 6px;">Составлено по открытым источникам · май 2026 · папка «Целительство»</p>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

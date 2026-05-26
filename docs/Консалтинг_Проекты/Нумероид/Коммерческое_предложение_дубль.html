@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Коммерческое предложение — Нумероид</title>
+  <style>
+    @font-face {
+      font-family: "Styrene ALC";
+      src:
+        local("Styrene ALC Light"),
+        local("StyreneALC-Light"),
+        url("../Артем Соколов/Предложение_аудит_Travel_Lifestyle_FO/assets/fonts/StyreneALC-Light.woff2") format("woff2"),
+        url("../Артем Соколов/Предложение_аудит_Travel_Lifestyle_FO/assets/fonts/StyreneALC-Light.otf") format("opentype"),
+        url("../Артем Соколов/Предложение_аудит_Travel_Lifestyle_FO/assets/fonts/StyreneALC-Light.ttf") format("truetype");
+      font-weight: 300;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #fafafa;
+      --text: #0d0d0d;
+      --muted: #5c5c5c;
+      --rule: #0d0d0d;
+      --line: #e0e0e0;
+      --table-head: #f3f3f4;
+      --maxw: 680px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Styrene ALC", "Styrene ALC Web", -apple-system, BlinkMacSystemFont,
+        "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+      font-weight: 300;
+      background: #ececec;
+      color: var(--text);
+      line-height: 1.38;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .doc { padding: 12px 0 18px; }
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 0 auto 12px;
+      background: var(--bg);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+      position: relative;
+      overflow: hidden;
+      page-break-after: always;
+      break-after: page;
+    }
+    .page:last-child {
+      page-break-after: auto;
+      break-after: auto;
+      margin-bottom: 0;
+    }
+    .hero {
+      padding: 2.2rem 1.3rem 1.6rem;
+      border-bottom: 3px solid var(--rule);
+      background: var(--bg-subtle);
+    }
+    .hero-inner { max-width: var(--maxw); margin: 0 auto; }
+    .kicker {
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 0.7rem;
+    }
+    .kicker span { color: var(--text); margin-right: 0.35em; }
+    .hero-title {
+      margin: 0;
+      font-size: clamp(1.7rem, 4.2vw, 2.3rem);
+      font-weight: 600;
+      letter-spacing: -0.035em;
+      line-height: 1.08;
+      max-width: 30ch;
+    }
+    .page-main { max-width: var(--maxw); margin: 0 auto; padding: 1.1rem 1.3rem 1.7rem; }
+    h2 {
+      margin: 1.35rem 0 0.45rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    h2::after {
+      content: "";
+      display: block;
+      width: 100%;
+      max-width: 3.8rem;
+      height: 3px;
+      background: var(--rule);
+      margin-top: 0.45rem;
+    }
+    p { margin: 0 0 0.42rem; }
+    strong { font-weight: 600; }
+    ul, ol { margin: 0 0 0.45rem; padding-left: 1.1rem; }
+    li { margin-bottom: 0.2rem; }
+    hr {
+      border: none;
+      height: 1px;
+      background: var(--line);
+      margin: 1.05rem 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+      margin: 0.65rem 0 0.8rem;
+      border: 1px solid var(--line);
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    th, td {
+      padding: 0.4rem 0.52rem;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      background: var(--table-head);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.62rem;
+    }
+    h2, p, ul, ol, table {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    tr:last-child td { border-bottom: none; }
+    .page-num {
+      position: absolute;
+      right: 1.4rem;
+      bottom: 1rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    @media print {
+      @page { size: A4; margin: 0; }
+      body { background: #fff; }
+      .doc { padding: 0; }
+      .page {
+        width: 210mm;
+        min-height: 297mm;
+        margin: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="doc">
+    <section class="page">
+      <header class="hero">
+        <div class="hero-inner">
+          <p class="kicker"><span>●</span> Консалтинг · Нумероид</p>
+          <h1 class="hero-title">Коммерческое предложение по проекту синергии Numeroid и Aerotone</h1>
+        </div>
+      </header>
+      <main class="page-main">
+        <p><strong>Контекст:</strong> владельцы сервисов рассматривают рост <strong>Numeroid</strong> как отдельного продукта и просят зафиксировать реалистичную проектную рамку с учетом синергии с <strong>Aerotone</strong>.</p>
+        <p><strong>Цель работы:</strong> за 30 дней подготовить управленческое решение, которое даст заказчику практичную модель совместной работы <strong>Numeroid + Aerotone</strong> и оценку коммерческого потенциала <strong>Numeroid</strong> для продажи на рынке.</p>
+        <p>Проект одновременно закрывает стратегические и коммерческие задачи: синергии двух сервисов, модель продаж и управления, а также потенциал <strong>Numeroid</strong> для рыночного роста. По итогам 30 дней заказчик получает готовый к использованию пакет управленческих решений для собственников. Формат с фиксированной ценой и опциональными расширениями снижает бюджетный риск на старте и позволяет углублять только приоритетные направления.</p>
+        <p><strong>Срок выполнения:</strong> 30 календарных дней.</p>
+        <p><strong>Формат:</strong> проект с фиксированным scope, недельными контрольными точками и итоговой защитой перед собственниками.</p>
+        <hr />
+
+        <h2>1. Что будет в проекте</h2>
+        <ol>
+          <li><strong>Проработка модели синергии Numeroid и Aerotone:</strong>
+            <ul>
+              <li>оценка сценария, где Numeroid становится технологической базой для Aerotone;</li>
+              <li>разделение ролей сервисов (технология, продукт, сервис, коммерция);</li>
+              <li>модель продаж и управления между сервисами: кто продает, какой сервис выступает витриной, как распределяется выручка, кто владеет клиентом и кто отвечает за сервисный результат.</li>
+            </ul>
+          </li>
+          <li><strong>Оценка потенциала Numeroid для продажи:</strong>
+            <ul>
+              <li>оценка рыночного спроса на сервис в текущем виде и в целевых сегментах;</li>
+              <li>определение приоритетных клиентских групп с наибольшей вероятностью покупки;</li>
+              <li>рекомендации по позиционированию, чтобы повысить конверсию в продажу.</li>
+            </ul>
+          </li>
+          <li><strong>Оценка потенциала Numeroid как white label продукта:</strong>
+            <ul>
+              <li>анализ потребности рынка в white label решениях для банков и компаний;</li>
+              <li>проверка реализуемости white label модели для Numeroid;</li>
+              <li>определение условий, при которых white label формат создает ценность для заказчика.</li>
+            </ul>
+          </li>
+        </ol>
+      </main>
+      <div class="page-num">Стр. 1 / 2</div>
+    </section>
+
+    <section class="page">
+      <main class="page-main">
+        <h2>2. Состав работ за 30 дней</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Этап</th>
+              <th>Результат</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Неделя 1</td>
+              <td>Старт проекта, сбор вводных, интервью с ключевыми участниками, фиксация текущей модели взаимодействия Numeroid + Aerotone.</td>
+            </tr>
+            <tr>
+              <td>Неделя 2</td>
+              <td>Проектирование целевой модели синергии: роли, модель продаж, модель управления, зона ответственности каждого сервиса.</td>
+            </tr>
+            <tr>
+              <td>Неделя 3</td>
+              <td>Оценка потенциала Numeroid для продажи: сегменты, клиентский спрос, барьеры покупки, приоритеты коммерческого фокуса.</td>
+            </tr>
+            <tr>
+              <td>Неделя 4</td>
+              <td>Оценка white label направления и сборка итогового пакета рекомендаций с финальной защитой перед собственниками.</td>
+            </tr>
+          </tbody>
+        </table>
+        <hr />
+
+        <h2>3. Что передается по итогам</h2>
+        <ul>
+          <li>Модель синергии Numeroid + Aerotone с описанием роли Numeroid как технологической базы.</li>
+          <li>Проектная модель продаж и управления между сервисами (контур продаж, владельцы клиентов, зоны ответственности, принципы принятия решений).</li>
+          <li>Аналитическая оценка потенциала Numeroid для продажи (где и за счет чего сервис может расти быстрее).</li>
+          <li>Аналитическая записка по white label потенциалу Numeroid (сегменты, ограничения, условия применимости).</li>
+          <li>Итоговая презентация для собственников с управленческими решениями и приоритетами.</li>
+        </ul>
+
+        <h2>4. Коммерческие условия</h2>
+        <ul>
+          <li>Фиксированная стоимость проекта (30 дней): <strong>600 000 ₽</strong>.</li>
+          <li>Оплата: 50% аванс, 50% по факту сдачи итогового пакета deliverables.</li>
+          <li>Команда: руководитель проекта (бизнес-консультант) + аналитическая поддержка по рынку и коммерческой модели.</li>
+          <li>Рабочая группа со стороны заказчика: owner проекта, представители Numeroid, Aerotone, коммерческой функции и операционного блока для предоставления данных, участия в интервью и согласования промежуточных решений.</li>
+        </ul>
+
+        <h2>5. Возможность расширения блоков (опционально)</h2>
+        <ul>
+          <li><strong>Расширение блока синергий и операционной модели</strong> (дополнительная детализация процессов, SLA, KPI, роли): от <strong>150 000 ₽</strong>.</li>
+          <li><strong>Расширение блока коммерческой модели продаж</strong> (декомпозиция каналов, воронки, сценарии внедрения): от <strong>150 000 ₽</strong>.</li>
+          <li><strong>Расширение блока white label</strong> (углубленная рыночная проверка, сценарии партнерств, приоритизация сегментов): от <strong>150 000 ₽</strong>.</li>
+          <li>Финальная стоимость расширений определяется по согласованному scope и срокам.</li>
+        </ul>
+      </main>
+      <div class="page-num">Стр. 2 / 2</div>
+    </section>
+  </div>
+</body>
+</html>

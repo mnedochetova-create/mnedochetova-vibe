@@ -19,6 +19,7 @@ dist/
 build/
 coverage/
 output/
+bot/data/events.json
 
 # Env / secrets
 .env
