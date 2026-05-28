@@ -100,9 +100,12 @@
 
 ## Минимальные команды
 
-- `/start` — начать работу.
-- `/help` — показать помощь.
-- `/new` — создать событие напрямую.
+- `/start` — перезапуск / приветствие.
+- `/help` — помощь и восстановление сценария.
+- `/cancel` — прервать текущий ввод.
+- Новая поездка — кнопка **✨ Новая поездка** (не дублируется в burger).
+
+Документация UX: `docs/Family travel bot/README.md`, аудит сценариев: `SCENARIO_AUDIT.md`.
 
 ## Промпт парсинга брифа
 
@@ -118,9 +121,10 @@
 - System prompt: `bot/prompts/live_response_system_prompt.md`
 - User template: `bot/prompts/live_response_user_prompt_template.md`
 - Логика:
-  - включается флагом `USE_LLM_LIVE_RESPONSES=true`;
-  - используется только для формулировки текста ответа (кнопки и шаги сценария остаются прежними);
-  - при ошибке сети/LLM или невалидном JSON бот автоматически откатывается к штатному тексту ответа.
+  - включается `USE_LLM_LIVE_RESPONSES=true` (принимаются также `TRUE`, `yes`, `1`) + обязателен `LLM_API_KEY`;
+  - меняется только **короткий intro** при парсинге вводных (не весь чат и не HTML-бриф);
+  - при старте в логах: `Runtime flags: live_responses=True ... llm_api_key=set`;
+  - при ошибке сети/LLM — fallback на штатный текст.
 
 ## Structured brief pipeline (LLM)
 

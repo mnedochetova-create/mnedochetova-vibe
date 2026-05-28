@@ -6,6 +6,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from env_util import env_flag
+
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 LIVE_SYSTEM_PROMPT_FILE = PROMPTS_DIR / "live_response_system_prompt.md"
@@ -18,7 +20,7 @@ ALLOWED_TONES = {"neutral", "supportive", "concise"}
 
 
 def live_responses_enabled() -> bool:
-    return os.getenv("USE_LLM_LIVE_RESPONSES", "false").strip().lower() == "true"
+    return env_flag("USE_LLM_LIVE_RESPONSES")
 
 
 def _load_prompt(path: Path, cache_value: Optional[str], label: str) -> str:
@@ -98,6 +100,7 @@ def _parse_live_response(content: str) -> Optional[Dict[str, Any]]:
 
 def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[str, Any]:
     if not live_responses_enabled():
+        logging.debug("Live response fallback: disabled (USE_LLM_LIVE_RESPONSES)")
         return {
             "assistant_text": fallback_text,
             "tone": "neutral",
@@ -106,6 +109,7 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
         }
     api_key = os.getenv("LLM_API_KEY", "").strip()
     if not api_key:
+        logging.warning("Live response fallback: LLM_API_KEY is empty")
         return {
             "assistant_text": fallback_text,
             "tone": "neutral",
@@ -148,12 +152,14 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
         content = parsed["choices"][0]["message"]["content"]
         live = _parse_live_response(content)
         if not live:
+            logging.info("Live response fallback: invalid_json")
             return {
                 "assistant_text": fallback_text,
                 "tone": "neutral",
                 "confidence": 1.0,
                 "source": "fallback_invalid_json",
             }
+        logging.info("Live response from LLM (model=%s)", model)
         return {**live, "source": "llm"}
     except (
         urllib.error.URLError,

@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 import brief_parser
 import brief_pipeline
+import env_util
 import live_response
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
@@ -2032,8 +2033,27 @@ async def cancel_handler(message: Message, state: FSMContext) -> None:
     )
 
 
+def log_runtime_flags() -> None:
+    live_on = env_util.env_flag("USE_LLM_LIVE_RESPONSES")
+    parser_on = env_util.env_flag("USE_LLM_BRIEF_PARSER")
+    pipeline_on = env_util.env_flag("USE_STRUCTURED_BRIEF_PIPELINE")
+    has_key = bool(os.getenv("LLM_API_KEY", "").strip())
+    logging.info(
+        "Runtime flags: live_responses=%s parser_llm=%s structured_pipeline=%s llm_api_key=%s",
+        live_on,
+        parser_on,
+        pipeline_on,
+        "set" if has_key else "MISSING",
+    )
+    if live_on and not has_key:
+        logging.warning(
+            "USE_LLM_LIVE_RESPONSES is on but LLM_API_KEY is missing — live texts will use fallbacks"
+        )
+
+
 async def main() -> None:
     load_dotenv()
+    log_runtime_flags()
     load_events()
     token = os.getenv("BOT_TOKEN")
     if not token:

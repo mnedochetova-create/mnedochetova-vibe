@@ -11,6 +11,14 @@ if str(SRC_DIR) not in sys.path:
 import live_response  # noqa: E402
 
 
+def test_live_responses_enabled_accepts_truthy_values(monkeypatch) -> None:
+    for value in ("true", "TRUE", "yes", "1"):
+        monkeypatch.setenv("USE_LLM_LIVE_RESPONSES", value)
+        assert live_response.live_responses_enabled() is True
+    monkeypatch.setenv("USE_LLM_LIVE_RESPONSES", "false")
+    assert live_response.live_responses_enabled() is False
+
+
 def test_generate_live_response_falls_back_when_disabled(monkeypatch) -> None:
     monkeypatch.setenv("USE_LLM_LIVE_RESPONSES", "false")
     result = live_response.generate_live_response(
