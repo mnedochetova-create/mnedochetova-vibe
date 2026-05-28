@@ -291,7 +291,13 @@ def get_latest_event_for_chat(chat_id: int) -> Optional[tuple[str, Dict[str, Any
     def pick_latest(items: list[tuple[str, Dict[str, Any]]]) -> Optional[tuple[str, Dict[str, Any]]]:
         if not items:
             return None
-        items.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
+        items.sort(
+            key=lambda x: (
+                brief_parser.brief_completeness_score(x[1].get("brief") or {}),
+                x[1].get("updated_at", x[1].get("created_at", 0)),
+            ),
+            reverse=True,
+        )
         return items[0]
 
     latest_organizer = pick_latest(organizer_hits)
@@ -316,24 +322,66 @@ def text_looks_like_brief_submission(text: str) -> bool:
     return intent in {"brief_input", "mixed"}
 
 
-async def ensure_organizer_event_code(message: Message, state: FSMContext) -> Optional[str]:
-    data = await state.get_data()
-    event_code = data.get("event_code")
-    if event_code and event_code in EVENTS:
-        if _chat_id_matches(EVENTS[event_code].get("organizer_chat_id"), message.chat.id):
-            return event_code
+def pick_best_organizer_event(chat_id: int) -> Optional[tuple[str, Dict[str, Any]]]:
+    hits: list[tuple[str, Dict[str, Any]]] = []
+    for code, event in EVENTS.items():
+        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
+            hits.append((code, event))
+    if not hits:
+        return None
+    hits.sort(
+        key=lambda x: (
+            brief_parser.brief_completeness_score(x[1].get("brief") or {}),
+            x[1].get("updated_at", x[1].get("created_at", 0)),
+        ),
+        reverse=True,
+    )
+    return hits[0]
 
-    recovered = get_latest_event_for_chat(message.chat.id)
-    if recovered and recovered[2] == "organizer":
-        code, event, _role = recovered
+
+async def ensure_organizer_event_code(message: Message, state: FSMContext) -> Optional[str]:
+    chat_id = message.chat.id
+    best = pick_best_organizer_event(chat_id)
+    if best:
+        code, event = best
         await state.update_data(
             role="organizer",
             event_code=code,
             brief=event.get("brief") or {},
-            organizer_chat_id=message.chat.id,
+            organizer_chat_id=chat_id,
         )
         return code
     return None
+
+
+async def resolve_organizer_event_and_brief(
+    message: Message,
+    state: FSMContext,
+) -> tuple[str, Dict[str, Any]]:
+    """Всегда берём самый заполненный бриф организатора для чата (не пустой дубликат из FSM)."""
+    chat_id = message.chat.id
+    code = await ensure_organizer_event_code(message, state)
+    if not code:
+        code = await bootstrap_organizer_event(message, state)
+    best = pick_best_organizer_event(chat_id)
+    if best:
+        best_code, best_event = best
+        best_brief = dict(best_event.get("brief") or {})
+        current_brief = dict(EVENTS.get(code, {}).get("brief") or {})
+        if brief_parser.brief_completeness_score(best_brief) > brief_parser.brief_completeness_score(
+            current_brief
+        ):
+            code = best_code
+        existing_brief = dict(EVENTS.get(code, {}).get("brief") or {})
+    else:
+        existing_brief = dict(EVENTS.get(code, {}).get("brief") or {})
+    await state.update_data(
+        role="organizer",
+        event_code=code,
+        brief=existing_brief,
+        organizer_chat_id=chat_id,
+    )
+    return code, existing_brief
 
 
 async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str:
@@ -350,9 +398,16 @@ async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str
 
 
 async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
-    existing = await ensure_organizer_event_code(message, state)
+    existing = pick_best_organizer_event(message.chat.id)
     if existing:
-        return existing
+        code, event = existing
+        await state.update_data(
+            role="organizer",
+            event_code=code,
+            brief=event.get("brief") or {},
+            organizer_chat_id=message.chat.id,
+        )
+        return code
 
     event_code = new_event_code()
     event_number = next_event_number()
@@ -625,13 +680,8 @@ async def _apply_organizer_brief_from_message(
     *,
     flow_step: str,
 ) -> tuple[Dict[str, Any], List[str], Optional[int], Optional[str]]:
-    data = await state.get_data()
-    event_code = data.get("event_code")
     text = message.text or ""
-
-    existing_brief: Dict[str, Any] = {}
-    if event_code and event_code in EVENTS:
-        existing_brief = EVENTS[event_code].get("brief") or {}
+    event_code, existing_brief = await resolve_organizer_event_and_brief(message, state)
 
     incoming = extract_brief_from_text(text)
     brief = merge_brief(existing_brief, incoming)
@@ -704,13 +754,9 @@ async def handle_organizer_conversation(
     *,
     flow_step: str,
 ) -> None:
-    data = await state.get_data()
-    event_code = data.get("event_code")
     text = message.text or ""
     history = await save_dialog_turn(state, user_text=text)
-    brief = data.get("brief") or {}
-    if event_code and event_code in EVENTS:
-        brief = EVENTS[event_code].get("brief") or brief
+    event_code, brief = await resolve_organizer_event_and_brief(message, state)
 
     incoming = extract_brief_from_text(text)
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
@@ -779,11 +825,7 @@ async def handle_organizer_mixed(
 ) -> None:
     text = message.text or ""
     history = await save_dialog_turn(state, user_text=text)
-    data = await state.get_data()
-    brief = data.get("brief") or {}
-    event_code = data.get("event_code")
-    if event_code and event_code in EVENTS:
-        brief = EVENTS[event_code].get("brief") or brief
+    event_code, brief = await resolve_organizer_event_and_brief(message, state)
     missing = missing_brief_fields(brief)
 
     intro_context = build_live_prompt_context(
@@ -829,9 +871,6 @@ async def route_organizer_text_message(
 ) -> None:
     if await handle_menu_shortcuts(message, state):
         return
-    event_code = await ensure_organizer_event_code(message, state)
-    if not event_code:
-        await bootstrap_organizer_event(message, state)
     intent = message_intent.classify_message_intent(
         message.text or "",
         role="organizer",

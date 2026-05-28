@@ -339,9 +339,17 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 
     destinations = _detect_destinations(t)
 
-    if "море" in t or "пляж" in t:
+    has_sea = "море" in t or "пляж" in t
+    has_mountains = bool(re.search(r"\bгор", t))
+    if has_sea and has_mountains:
+        brief["climate"] = "море/пляж и горы"
+        brief.setdefault("activity_preferences", [])
+        for note in ("виноградники / горы", "пляжный отдых"):
+            if note not in brief["activity_preferences"]:
+                brief["activity_preferences"].append(note)
+    elif has_sea:
         brief["climate"] = "море/пляж"
-    if "горы" in t or ("горн" in t and "климат" in t):
+    elif has_mountains or ("горн" in t and "климат" in t):
         brief["climate"] = "горы"
     if "экскурс" in t or "музе" in t:
         brief["trip_type"] = "экскурсии/город"
@@ -379,28 +387,92 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     return brief
 
 
+def _is_empty_brief_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (list, dict)) and len(value) == 0:
+        return True
+    return False
+
+
+def brief_completeness_score(brief: Dict[str, Any]) -> int:
+    if not brief:
+        return 0
+    score = 0
+    if brief.get("months") or brief.get("date_range_raw"):
+        score += 3
+    if brief.get("budget_rub_max"):
+        score += 3
+    if brief.get("adults") or brief.get("kids_count"):
+        score += 3
+    if brief.get("flight_hours_max") or brief.get("flight_hours_unrestricted") or "transfers_allowed" in brief:
+        score += 2
+    if "visa_required" in brief or brief.get("visa_status") or brief.get("visa_notes"):
+        score += 2
+    if brief.get("passports_status") or brief.get("passports_notes"):
+        score += 1
+    if brief.get("climate") or brief.get("trip_type"):
+        score += 1
+    if brief.get("activity_preferences"):
+        score += 1
+    return score
+
+
+def _combine_climate(existing: str, new: str) -> str:
+    if not existing:
+        return new
+    if not new or existing == new:
+        return existing
+    if new in existing or existing in new:
+        return existing
+    return f"{existing} и {new}"
+
+
 def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base or {})
     for k, v in (incoming or {}).items():
         if v is None:
             continue
+        if k == "context_raw":
+            if v:
+                out[k] = v
+            continue
         if k == "months":
+            if _is_empty_brief_value(v):
+                continue
             out.setdefault("months", [])
             for item in v:
                 if item not in out["months"]:
                     out["months"].append(item)
             continue
         if k in {"visa_notes", "constraints_notes", "activity_preferences"}:
+            if _is_empty_brief_value(v):
+                continue
             out.setdefault(k, [])
             for item in v:
                 if item not in out[k]:
                     out[k].append(item)
             continue
         if k in {"passports_notes"}:
+            if _is_empty_brief_value(v):
+                continue
             out.setdefault(k, [])
             for item in v:
                 if item not in out[k]:
                     out[k].append(item)
+            continue
+        if k == "climate" and not _is_empty_brief_value(v):
+            current = out.get("climate")
+            if current and str(current) != str(v):
+                out[k] = _combine_climate(str(current), str(v))
+            elif not _is_empty_brief_value(current):
+                out[k] = current
+            else:
+                out[k] = v
+            continue
+        if _is_empty_brief_value(v) and not _is_empty_brief_value(out.get(k)):
             continue
         out[k] = v
     return out
