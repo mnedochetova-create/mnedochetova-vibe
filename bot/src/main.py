@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Optional, Dict, Any, List
@@ -27,7 +28,9 @@ from dotenv import load_dotenv
 import brief_parser
 import brief_pipeline
 import env_util
+import dialog_context
 import live_response
+import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
 
@@ -384,18 +387,28 @@ def build_live_prompt_context(
     parser_result: Dict[str, Any],
     conflicts: List[str],
     user_message: str,
+    dialog_history: Optional[List[Dict[str, str]]] = None,
+    step_context_human: str = "",
 ) -> Dict[str, Any]:
+    history = dialog_context.trim_dialog_history(dialog_history or [])
+    recent = history if history else [{"role": "user", "text": user_message}]
     return {
         "role": role,
         "flow_step": flow_step,
         "human_status": human_status,
         "allowed_next_action": allowed_next_action,
         "last_system_action": last_system_action,
+        "step_context_human": step_context_human
+        or dialog_context.build_step_context_human(
+            role=role, flow_step=flow_step, missing=missing
+        ),
+        "dialog_summary": dialog_context.build_dialog_summary(history),
+        "last_bot_message": dialog_context.last_bot_message(history),
         "brief_json": brief,
         "missing_fields_json": missing,
         "parser_result_json": parser_result,
         "conflicts_json": conflicts,
-        "recent_messages_json": [{"role": "user", "text": user_message}],
+        "recent_messages_json": recent,
         "user_message": user_message,
     }
 
@@ -406,6 +419,555 @@ def live_text_or_fallback(context: Dict[str, Any], fallback_text: str) -> str:
     if source != "llm":
         logging.info("Live response using fallback (source=%s)", source)
     return str(result.get("assistant_text") or fallback_text)
+
+
+def _strip_html_for_history(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text or "").strip()
+
+
+async def load_dialog_history(state: FSMContext) -> List[Dict[str, str]]:
+    data = await state.get_data()
+    return dialog_context.trim_dialog_history(data.get("dialog_history") or [])
+
+
+async def save_dialog_turn(
+    state: FSMContext,
+    *,
+    user_text: str = "",
+    bot_text: str = "",
+) -> List[Dict[str, str]]:
+    history = await load_dialog_history(state)
+    if user_text.strip():
+        history = dialog_context.append_dialog_turn(history, role="user", text=user_text)
+    if bot_text.strip():
+        history = dialog_context.append_dialog_turn(
+            history, role="assistant", text=_strip_html_for_history(bot_text)
+        )
+    await state.update_data(dialog_history=history)
+    return history
+
+
+async def answer_live_text(
+    message: Message,
+    context: Dict[str, Any],
+    fallback_text: str,
+) -> str:
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+    except Exception as err:
+        logging.debug("typing action skipped: %s", err)
+    return live_text_or_fallback(context, fallback_text)
+
+
+STATIC_CLARIFY_HEADER_DUMP = "🚨 <b>Уточните только это</b> (можно одним сообщением):"
+STATIC_CLARIFY_HEADER_CLARIFY = "🚨 <b>Осталось уточнить</b> (сначала главное):"
+CONVERSATION_FALLBACK_ORGANIZER = (
+    "Поняла. Расскажи, что для тебя важно в поездке — помогу сформулировать или ответить на вопрос."
+)
+CONVERSATION_FALLBACK_PARTICIPANT = (
+    "Поняла. Если хочешь — помогу сформулировать пожелания; когда будешь готов, напиши факты одним сообщением."
+)
+MIXED_FALLBACK_ORGANIZER = (
+    "Поняла вопрос. Ниже — что уже зафиксировала в брифе по твоим фактам."
+)
+
+
+def _merge_organizer_structured(event_code: str, text: str) -> List[str]:
+    if not event_code or event_code not in EVENTS:
+        return []
+    if not brief_pipeline.structured_pipeline_enabled():
+        return []
+    structured_organizer = brief_pipeline.parse_organizer_message(text)
+    if not structured_organizer:
+        return []
+    event = EVENTS[event_code]
+    event["base_brief_structured"] = structured_organizer
+    merged_structured = brief_pipeline.merge_brief_inputs(
+        base_brief_json=structured_organizer,
+        participant_inputs_json=event.get("participant_inputs_structured") or [],
+        new_input_json=structured_organizer,
+        current_event_status=_event_status_info(event).get("key", "active"),
+    )
+    if not merged_structured:
+        return []
+    event["merged_brief_structured"] = merged_structured
+    return [
+        str(item.get("topic") or item.get("description") or "расхождение")
+        for item in (merged_structured.get("conflicts") or [])
+        if isinstance(item, dict)
+    ]
+
+
+def build_organizer_brief_reply_parts(
+    brief: Dict[str, Any],
+    *,
+    flow_step: str,
+    event_number: Optional[int],
+    chat_id: int,
+    missing: List[str],
+) -> tuple[List[str], bool]:
+    insight = dialog_context.brief_insight_line(brief)
+    summary_text = format_brief_update_message(
+        brief, event_number=event_number, insight=insight
+    )
+    parts = [summary_text]
+    if not missing:
+        variants = (
+            dialog_context.COMPLETE_VARIANTS_ORGANIZER
+            if flow_step == "organizer_dump"
+            else dialog_context.COMPLETE_VARIANTS_ORGANIZER_CLARIFY
+        )
+        parts.append(dialog_context.pick_variant(chat_id, variants))
+        return parts, True
+
+    top_missing = dialog_context.prioritize_missing(missing)
+    header = (
+        STATIC_CLARIFY_HEADER_DUMP
+        if flow_step == "organizer_dump"
+        else STATIC_CLARIFY_HEADER_CLARIFY
+    )
+    missing_text = "\n".join(f"- {m}" for m in top_missing)
+    suffix = "\n\nМожно одним сообщением." if flow_step == "organizer_clarify" else ""
+    extra = ""
+    if len(missing) > len(top_missing):
+        extra = (
+            f"\n\n<i>И ещё {len(missing) - len(top_missing)} пункт(а) — можно в том же сообщении.</i>"
+        )
+    parts.append(f"{header}\n{missing_text}{suffix}{extra}")
+    return parts, False
+
+
+async def _apply_organizer_brief_from_message(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+) -> tuple[Dict[str, Any], List[str], Optional[int], Optional[str]]:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    text = message.text or ""
+
+    existing_brief: Dict[str, Any] = {}
+    if event_code and event_code in EVENTS:
+        existing_brief = EVENTS[event_code].get("brief") or {}
+
+    incoming = extract_brief_from_text(text)
+    brief = merge_brief(existing_brief, incoming)
+    _merge_organizer_structured(event_code or "", text)
+
+    if event_code and event_code in EVENTS:
+        if flow_step == "organizer_dump":
+            EVENTS[event_code]["organizer_dump"] = text
+        EVENTS[event_code]["brief"] = brief
+        touch_event(EVENTS[event_code])
+        save_events()
+
+    if flow_step == "organizer_dump":
+        await state.update_data(organizer_dump=text, brief=brief)
+        await state.set_state(FlowState.organizer_clarify)
+    else:
+        await state.update_data(brief=brief)
+
+    missing = missing_brief_fields(brief)
+    event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
+    return brief, missing, event_number, event_code
+
+
+async def handle_organizer_brief_input(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+) -> None:
+    text = message.text or ""
+    await save_dialog_turn(state, user_text=text)
+    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+        message, state, flow_step=flow_step
+    )
+    summary_text = format_brief_update_message(
+        brief,
+        event_number=event_number,
+        insight=dialog_context.brief_insight_line(brief),
+    )
+    step_label = "отправка брифа" if flow_step == "organizer_dump" else "уточнение брифа"
+    await emit_parse_log(
+        message.bot,
+        message,
+        role="organizer",
+        event_number=event_number if isinstance(event_number, int) else None,
+        step_label=step_label,
+        user_text=text,
+        brief=brief,
+        missing=missing,
+        brief_html=summary_text,
+    )
+
+    parts, is_complete = build_organizer_brief_reply_parts(
+        brief,
+        flow_step=flow_step,
+        event_number=event_number,
+        chat_id=message.chat.id,
+        missing=missing,
+    )
+    body = "\n\n".join(parts)
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+    if is_complete:
+        await send_next_step_after_brief(message, state)
+
+
+async def handle_organizer_conversation(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+) -> None:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    text = message.text or ""
+    history = await save_dialog_turn(state, user_text=text)
+    brief = data.get("brief") or {}
+    if event_code and event_code in EVENTS:
+        brief = EVENTS[event_code].get("brief") or brief
+
+    incoming = extract_brief_from_text(text)
+    brief_updated = message_intent.has_substantive_parsed_fields(incoming)
+    merger_conflicts: List[str] = []
+    change_info = {"added_fields": [], "updated_fields": []}
+    if brief_updated:
+        previous_brief = dict(brief)
+        brief = merge_brief(brief, incoming)
+        change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
+        merger_conflicts = _merge_organizer_structured(event_code or "", text)
+        if event_code and event_code in EVENTS:
+            EVENTS[event_code]["brief"] = brief
+            touch_event(EVENTS[event_code])
+            save_events()
+        await state.update_data(brief=brief)
+
+    missing = missing_brief_fields(brief)
+    parser_result = live_response.build_parser_result(
+        saved=brief_updated,
+        confidence=parser_confidence_hint() if brief_updated else 0.0,
+        added_fields=change_info["added_fields"],
+        updated_fields=change_info["updated_fields"],
+        conflicts=merger_conflicts,
+    )
+    step_human = dialog_context.build_step_context_human(
+        role="organizer", flow_step=flow_step, missing=missing
+    )
+    live_context = build_live_prompt_context(
+        role="organizer",
+        flow_step="conversation",
+        human_status="Живой диалог с организатором",
+        allowed_next_action="ask_clarification | continue_flow | none",
+        last_system_action="conversation_turn",
+        brief=brief,
+        missing=missing,
+        parser_result=parser_result,
+        conflicts=merger_conflicts,
+        user_message=text,
+        dialog_history=history,
+        step_context_human=step_human,
+    )
+    reply = await answer_live_text(message, live_context, CONVERSATION_FALLBACK_ORGANIZER)
+    parts = [reply]
+    if brief_updated:
+        event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
+        parts.append(
+            format_brief_update_message(
+                brief,
+                event_number=event_number,
+                insight=dialog_context.brief_insight_line(brief),
+            )
+        )
+        parts.append(
+            "<i>Если хочешь оформить всё разом — пришли одним сообщением даты, состав и бюджет.</i>"
+        )
+    body = "\n\n".join(parts)
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+
+
+async def handle_organizer_mixed(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+) -> None:
+    text = message.text or ""
+    history = await save_dialog_turn(state, user_text=text)
+    data = await state.get_data()
+    brief = data.get("brief") or {}
+    event_code = data.get("event_code")
+    if event_code and event_code in EVENTS:
+        brief = EVENTS[event_code].get("brief") or brief
+    missing = missing_brief_fields(brief)
+
+    intro_context = build_live_prompt_context(
+        role="organizer",
+        flow_step="mixed",
+        human_status="Смешанная реплика: вопрос + факты",
+        allowed_next_action="ask_clarification | continue_flow | none",
+        last_system_action="mixed_turn",
+        brief=brief,
+        missing=missing,
+        parser_result=live_response.build_parser_result(saved=False, confidence=0.0),
+        conflicts=[],
+        user_message=text,
+        dialog_history=history,
+        step_context_human=dialog_context.build_step_context_human(
+            role="organizer", flow_step="mixed", missing=missing
+        ),
+    )
+    intro = await answer_live_text(message, intro_context, MIXED_FALLBACK_ORGANIZER)
+
+    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+        message, state, flow_step=flow_step
+    )
+    brief_parts, is_complete = build_organizer_brief_reply_parts(
+        brief,
+        flow_step=flow_step,
+        event_number=event_number,
+        chat_id=message.chat.id,
+        missing=missing,
+    )
+    body = "\n\n".join([intro, *brief_parts])
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+    if is_complete:
+        await send_next_step_after_brief(message, state)
+
+
+async def route_organizer_text_message(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+) -> None:
+    if await handle_menu_shortcuts(message):
+        return
+    intent = message_intent.classify_message_intent(
+        message.text or "",
+        role="organizer",
+        flow_step=flow_step,
+    )
+    logging.info("Organizer message intent=%s flow_step=%s", intent, flow_step)
+    if intent == "brief_input":
+        await handle_organizer_brief_input(message, state, flow_step=flow_step)
+    elif intent == "mixed":
+        await handle_organizer_mixed(message, state, flow_step=flow_step)
+    else:
+        await handle_organizer_conversation(message, state, flow_step=flow_step)
+
+
+async def handle_participant_brief_input(
+    message: Message,
+    state: FSMContext,
+    *,
+    prefix: str = "",
+    skip_user_history: bool = False,
+) -> None:
+    if not skip_user_history:
+        await save_dialog_turn(state, user_text=message.text or "")
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await message.answer("Событие не найдено. Попросите организатора прислать новую ссылку.")
+        return
+
+    event = EVENTS[event_code]
+    event_number = event.get("event_number")
+    base_brief = event.get("brief") or {}
+    merger_conflicts: List[str] = []
+    incoming = extract_brief_from_text(message.text or "")
+    participant_name = data.get("participant_name") or (
+        message.from_user.full_name if message.from_user else str(message.chat.id)
+    )
+    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+    change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+    conflict_keys = []
+    for key in incoming.keys():
+        if key in base_brief and base_brief.get(key) != incoming.get(key):
+            conflict_keys.append(key)
+    if brief_pipeline.structured_pipeline_enabled():
+        structured_participant = brief_pipeline.parse_participant_message(
+            message.text or "",
+            participant_name,
+        )
+        if structured_participant:
+            participant_inputs_structured = event.get("participant_inputs_structured") or []
+            participant_inputs_structured = brief_pipeline.upsert_participant_input(
+                participant_inputs_structured,
+                structured_participant,
+            )
+            event["participant_inputs_structured"] = participant_inputs_structured
+            merged_structured = brief_pipeline.merge_brief_inputs(
+                base_brief_json=event.get("base_brief_structured") or {},
+                participant_inputs_json=participant_inputs_structured,
+                new_input_json=structured_participant,
+                current_event_status=_event_status_info(event).get("key", "active"),
+            )
+            if merged_structured:
+                event["merged_brief_structured"] = merged_structured
+                merger_conflicts = [
+                    str(item.get("topic") or item.get("description") or "расхождение")
+                    for item in (merged_structured.get("conflicts") or [])
+                    if isinstance(item, dict)
+                ]
+    event["brief"] = updated_brief
+
+    updates = event.setdefault("participant_updates", {})
+    updates[chat_key(message.chat.id)] = {
+        "text": message.text or "",
+        "confirmed": False,
+        "name": participant_name,
+        "username": (message.from_user.username if message.from_user else None),
+        "updated_at": now_ts(),
+    }
+    participants = event.setdefault("participants", {})
+    if str(message.chat.id) in participants:
+        participants[str(message.chat.id)]["updated_at"] = now_ts()
+    touch_event(event)
+    save_events()
+
+    await state.set_state(FlowState.participant_confirm)
+    missing = missing_brief_fields(updated_brief)
+    missing_block = ""
+    if missing:
+        missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
+        missing_block = "\n\n🚨 <b>Нужно уточнить</b>\n" f"{missing_text}"
+    brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
+    await emit_parse_log(
+        message.bot,
+        message,
+        role="participant",
+        event_number=event_number if isinstance(event_number, int) else None,
+        step_label="пожелания участника",
+        user_text=message.text or "",
+        brief=updated_brief,
+        missing=missing,
+        brief_html=brief_html,
+    )
+    intro = dialog_context.pick_variant(
+        message.chat.id, dialog_context.PARTICIPANT_BRIEF_INTRO_VARIANTS
+    )
+    lead = f"{prefix}\n\n{intro}" if prefix else intro
+    body = f"{lead}\n\n{brief_html}\n\nПроверь, пожалуйста: всё верно?{missing_block}"
+    await message.answer(body, reply_markup=participant_confirm_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+
+
+async def handle_participant_conversation(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await message.answer("Событие не найдено. Попросите организатора прислать новую ссылку.")
+        return
+
+    event = EVENTS[event_code]
+    event_number = event.get("event_number")
+    text = message.text or ""
+    history = await save_dialog_turn(state, user_text=text)
+    base_brief = event.get("brief") or {}
+    participant_name = data.get("participant_name") or (
+        message.from_user.full_name if message.from_user else str(message.chat.id)
+    )
+
+    incoming = extract_brief_from_text(text)
+    brief_updated = message_intent.has_substantive_parsed_fields(incoming)
+    updated_brief = base_brief
+    change_info = {"added_fields": [], "updated_fields": []}
+    merger_conflicts: List[str] = []
+    if brief_updated:
+        updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+        change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+        event["brief"] = updated_brief
+        touch_event(event)
+        save_events()
+
+    missing = missing_brief_fields(updated_brief)
+    parser_result = live_response.build_parser_result(
+        saved=brief_updated,
+        confidence=parser_confidence_hint() if brief_updated else 0.0,
+        added_fields=change_info["added_fields"],
+        updated_fields=change_info["updated_fields"],
+    )
+    live_context = build_live_prompt_context(
+        role="participant",
+        flow_step="conversation",
+        human_status="Живой диалог с участником",
+        allowed_next_action="continue_flow | confirm_brief | none",
+        last_system_action="conversation_turn",
+        brief=updated_brief,
+        missing=missing,
+        parser_result=parser_result,
+        conflicts=merger_conflicts,
+        user_message=text,
+        dialog_history=history,
+        step_context_human=dialog_context.build_step_context_human(
+            role="participant", flow_step="participant_contribute", missing=missing
+        ),
+    )
+    reply = await answer_live_text(message, live_context, CONVERSATION_FALLBACK_PARTICIPANT)
+    parts = [reply]
+    if brief_updated:
+        parts.append(format_brief_for_participant(updated_brief, event_number=event_number))
+    body = "\n\n".join(parts)
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+
+
+async def handle_participant_mixed(message: Message, state: FSMContext) -> None:
+    text = message.text or ""
+    history = await save_dialog_turn(state, user_text=text)
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await message.answer("Событие не найдено. Попросите организатора прислать новую ссылку.")
+        return
+
+    event = EVENTS[event_code]
+    base_brief = event.get("brief") or {}
+    missing = missing_brief_fields(base_brief)
+    intro_context = build_live_prompt_context(
+        role="participant",
+        flow_step="mixed",
+        human_status="Смешанная реплика участника",
+        allowed_next_action="continue_flow | none",
+        last_system_action="mixed_turn",
+        brief=base_brief,
+        missing=missing,
+        parser_result=live_response.build_parser_result(saved=False, confidence=0.0),
+        conflicts=[],
+        user_message=text,
+        dialog_history=history,
+    )
+    intro = await answer_live_text(
+        message,
+        intro_context,
+        "Поняла вопрос. Ниже — как это ляжет в бриф.",
+    )
+    await handle_participant_brief_input(
+        message, state, prefix=intro, skip_user_history=True
+    )
+
+
+async def route_participant_text_message(message: Message, state: FSMContext) -> None:
+    if await handle_menu_shortcuts(message):
+        return
+    intent = message_intent.classify_message_intent(
+        message.text or "",
+        role="participant",
+        flow_step="participant_contribute",
+    )
+    logging.info("Participant message intent=%s", intent)
+    if intent == "brief_input":
+        await handle_participant_brief_input(message, state)
+    elif intent == "mixed":
+        await handle_participant_mixed(message, state)
+    else:
+        await handle_participant_conversation(message, state)
 
 
 def format_brief_unified(
@@ -564,8 +1126,16 @@ def format_brief_unified(
     return "\n".join(lines)
 
 
-def format_brief_update_message(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
-    return format_brief_unified(
+def format_brief_update_message(
+    brief: Dict[str, Any],
+    event_number: Optional[int] = None,
+    *,
+    insight: str = "",
+) -> str:
+    prefix = ""
+    if insight:
+        prefix = f"💡 <i>{html.escape(insight)}</i>\n\n"
+    return prefix + format_brief_unified(
         brief=brief,
         event_number=event_number,
         title="✨ <b>Бриф поездки обновлён</b>",
@@ -1515,120 +2085,14 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
 
 
 async def participant_contribute_handler(message: Message, state: FSMContext) -> None:
-    if await handle_menu_shortcuts(message):
-        return
-
-    data = await state.get_data()
-    event_code = data.get("event_code")
-    if not event_code or event_code not in EVENTS:
-        await message.answer("Событие не найдено. Попросите организатора прислать новую ссылку.")
-        return
-
-    event = EVENTS[event_code]
-    event_number = event.get("event_number")
-    base_brief = event.get("brief") or {}
-    merger_conflicts: List[str] = []
-    incoming = extract_brief_from_text(message.text or "")
-    participant_name = data.get("participant_name") or (
-        message.from_user.full_name if message.from_user else str(message.chat.id)
-    )
-    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
-    change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
-    conflict_keys = []
-    for key in incoming.keys():
-        if key in base_brief and base_brief.get(key) != incoming.get(key):
-            conflict_keys.append(key)
-    if brief_pipeline.structured_pipeline_enabled():
-        structured_participant = brief_pipeline.parse_participant_message(
-            message.text or "",
-            participant_name,
+    try:
+        await route_participant_text_message(message, state)
+    except Exception as err:
+        logging.exception("participant_contribute_handler failed: %s", err)
+        await message.answer(
+            "Не удалось обработать сообщение. Попробуй написать пожелания одним сообщением.",
+            reply_markup=main_menu_keyboard(),
         )
-        if structured_participant:
-            participant_inputs_structured = event.get("participant_inputs_structured") or []
-            participant_inputs_structured = brief_pipeline.upsert_participant_input(
-                participant_inputs_structured,
-                structured_participant,
-            )
-            event["participant_inputs_structured"] = participant_inputs_structured
-            merged_structured = brief_pipeline.merge_brief_inputs(
-                base_brief_json=event.get("base_brief_structured") or {},
-                participant_inputs_json=participant_inputs_structured,
-                new_input_json=structured_participant,
-                current_event_status=_event_status_info(event).get("key", "active"),
-            )
-            if merged_structured:
-                event["merged_brief_structured"] = merged_structured
-                merger_conflicts = [
-                    str(item.get("topic") or item.get("description") or "расхождение")
-                    for item in (merged_structured.get("conflicts") or [])
-                    if isinstance(item, dict)
-                ]
-    event["brief"] = updated_brief
-
-    updates = event.setdefault("participant_updates", {})
-    updates[chat_key(message.chat.id)] = {
-        "text": message.text or "",
-        "confirmed": False,
-        "name": participant_name,
-        "username": (message.from_user.username if message.from_user else None),
-        "updated_at": now_ts(),
-    }
-    participants = event.setdefault("participants", {})
-    if str(message.chat.id) in participants:
-        participants[str(message.chat.id)]["updated_at"] = now_ts()
-    touch_event(event)
-    save_events()
-
-    await state.set_state(FlowState.participant_confirm)
-    missing = missing_brief_fields(updated_brief)
-    missing_block = ""
-    if missing:
-        missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
-        missing_block = (
-            "\n\n🚨 <b>Нужно уточнить</b>\n"
-            f"{missing_text}"
-        )
-    brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
-    await emit_parse_log(
-        message.bot,
-        message,
-        role="participant",
-        event_number=event_number if isinstance(event_number, int) else None,
-        step_label="пожелания участника",
-        user_text=message.text or "",
-        brief=updated_brief,
-        missing=missing,
-        brief_html=brief_html,
-    )
-    parser_result = live_response.build_parser_result(
-        saved=True,
-        confidence=parser_confidence_hint(),
-        added_fields=change_info["added_fields"],
-        updated_fields=change_info["updated_fields"],
-        conflicts=(conflict_keys + merger_conflicts),
-    )
-    live_context = build_live_prompt_context(
-        role="participant",
-        flow_step="participant_contribute",
-        human_status="Получили пожелания участника",
-        allowed_next_action="confirm_brief | continue_flow",
-        last_system_action="participant_added_input",
-        brief=updated_brief,
-        missing=missing,
-        parser_result=parser_result,
-        conflicts=(conflict_keys + merger_conflicts),
-        user_message=message.text or "",
-    )
-    intro_text = live_text_or_fallback(
-        live_context,
-        "Спасибо, добавила твои пожелания отдельно — организатор увидит их без потери деталей.",
-    )
-    await message.answer(
-        f"{intro_text}\n\n"
-        f"{brief_html}\n\n"
-        f"Проверь, пожалуйста: всё верно?{missing_block}",
-        reply_markup=participant_confirm_keyboard(),
-    )
 
 
 async def participant_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -1694,107 +2158,8 @@ async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMC
 
 async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
     try:
-        if await handle_menu_shortcuts(message):
-            return
         logging.info("Organizer dump received chat_id=%s", message.chat.id)
-        data = await state.get_data()
-        event_code = data.get("event_code")
-        text = message.text or ""
-
-        existing_brief = {}
-        if event_code and event_code in EVENTS:
-            existing_brief = EVENTS[event_code].get("brief") or {}
-
-        incoming = extract_brief_from_text(text)
-        brief = merge_brief(existing_brief, incoming)
-        change_info = live_response.detect_field_changes(existing_brief, incoming, brief)
-        merger_conflicts: List[str] = []
-
-        if event_code and event_code in EVENTS:
-            if brief_pipeline.structured_pipeline_enabled():
-                structured_organizer = brief_pipeline.parse_organizer_message(text)
-                if structured_organizer:
-                    EVENTS[event_code]["base_brief_structured"] = structured_organizer
-                    merged_structured = brief_pipeline.merge_brief_inputs(
-                        base_brief_json=structured_organizer,
-                        participant_inputs_json=EVENTS[event_code].get("participant_inputs_structured") or [],
-                        new_input_json=structured_organizer,
-                        current_event_status=_event_status_info(EVENTS[event_code]).get("key", "active"),
-                    )
-                    if merged_structured:
-                        EVENTS[event_code]["merged_brief_structured"] = merged_structured
-                        merger_conflicts = [
-                            str(item.get("topic") or item.get("description") or "расхождение")
-                            for item in (merged_structured.get("conflicts") or [])
-                            if isinstance(item, dict)
-                        ]
-            EVENTS[event_code]["organizer_dump"] = text
-            EVENTS[event_code]["brief"] = brief
-            touch_event(EVENTS[event_code])
-            save_events()
-
-        await state.update_data(organizer_dump=text, brief=brief)
-        await state.set_state(FlowState.organizer_clarify)
-
-        missing = missing_brief_fields(brief)
-
-        summary_text = format_brief_update_message(brief, event_number=EVENTS.get(event_code, {}).get("event_number"))
-        event_number = EVENTS.get(event_code, {}).get("event_number")
-        await emit_parse_log(
-            message.bot,
-            message,
-            role="organizer",
-            event_number=event_number if isinstance(event_number, int) else None,
-            step_label="отправка брифа",
-            user_text=text,
-            brief=brief,
-            missing=missing,
-            brief_html=summary_text,
-        )
-        parser_result = live_response.build_parser_result(
-            saved=True,
-            confidence=parser_confidence_hint(),
-            added_fields=change_info["added_fields"],
-            updated_fields=change_info["updated_fields"],
-            conflicts=merger_conflicts,
-        )
-        live_context = build_live_prompt_context(
-            role="organizer",
-            flow_step="organizer_dump",
-            human_status="Ждём уточнение вводных" if missing else "Бриф собран",
-            allowed_next_action="ask_clarification | show_invite_link | continue_flow",
-            last_system_action="brief_updated" if not missing else "clarification_requested",
-            brief=brief,
-            missing=missing,
-            parser_result=parser_result,
-            conflicts=merger_conflicts,
-            user_message=text,
-        )
-
-        if not missing:
-            intro_text = live_text_or_fallback(
-                live_context,
-                "Отлично, базовых данных достаточно. Переходим к подключению участников.",
-            )
-            await message.answer(
-                f"{summary_text}\n\n"
-                f"{intro_text}",
-                reply_markup=main_menu_keyboard(),
-            )
-            await send_next_step_after_brief(message, state)
-            return
-
-        missing_text = "\n".join(f"- {m}" for m in missing)
-        clarify_text = live_text_or_fallback(
-            live_context,
-            "🚨 <b>Уточните только это</b> (можно одним сообщением):",
-        )
-        await message.answer(
-            f"{summary_text}\n\n"
-            f"{clarify_text}\n"
-            f"{missing_text}",
-            reply_markup=main_menu_keyboard(),
-        )
+        await route_organizer_text_message(message, state, flow_step="organizer_dump")
     except Exception as err:
         logging.exception("organizer_dump_handler failed: %s", err)
         await message.answer(
@@ -1806,101 +2171,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
 
 async def organizer_clarify_handler(message: Message, state: FSMContext) -> None:
     try:
-        if await handle_menu_shortcuts(message):
-            return
-        # Any follow-up message in clarify state merges into brief and asks only remaining missing fields
-        data = await state.get_data()
-        event_code = data.get("event_code")
-        brief = data.get("brief") or {}
-
-        incoming = extract_brief_from_text(message.text or "")
-        previous_brief = dict(brief)
-        brief = merge_brief(brief, incoming)
-        change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
-        merger_conflicts: List[str] = []
-
-        if event_code and event_code in EVENTS:
-            if brief_pipeline.structured_pipeline_enabled():
-                structured_organizer = brief_pipeline.parse_organizer_message(message.text or "")
-                if structured_organizer:
-                    EVENTS[event_code]["base_brief_structured"] = structured_organizer
-                    merged_structured = brief_pipeline.merge_brief_inputs(
-                        base_brief_json=structured_organizer,
-                        participant_inputs_json=EVENTS[event_code].get("participant_inputs_structured") or [],
-                        new_input_json=structured_organizer,
-                        current_event_status=_event_status_info(EVENTS[event_code]).get("key", "active"),
-                    )
-                    if merged_structured:
-                        EVENTS[event_code]["merged_brief_structured"] = merged_structured
-                        merger_conflicts = [
-                            str(item.get("topic") or item.get("description") or "расхождение")
-                            for item in (merged_structured.get("conflicts") or [])
-                            if isinstance(item, dict)
-                        ]
-            EVENTS[event_code]["brief"] = brief
-            touch_event(EVENTS[event_code])
-            save_events()
-
-        await state.update_data(brief=brief)
-
-        missing = missing_brief_fields(brief)
-        event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
-        summary_text = format_brief_update_message(brief, event_number=event_number)
-        await emit_parse_log(
-            message.bot,
-            message,
-            role="organizer",
-            event_number=event_number if isinstance(event_number, int) else None,
-            step_label="уточнение брифа",
-            user_text=message.text or "",
-            brief=brief,
-            missing=missing,
-            brief_html=summary_text,
-        )
-        parser_result = live_response.build_parser_result(
-            saved=True,
-            confidence=parser_confidence_hint(),
-            added_fields=change_info["added_fields"],
-            updated_fields=change_info["updated_fields"],
-            conflicts=merger_conflicts,
-        )
-        live_context = build_live_prompt_context(
-            role="organizer",
-            flow_step="organizer_clarify",
-            human_status="Ждём уточнение вводных" if missing else "Бриф собран",
-            allowed_next_action="ask_clarification | show_invite_link | continue_flow",
-            last_system_action="brief_updated" if not missing else "clarification_requested",
-            brief=brief,
-            missing=missing,
-            parser_result=parser_result,
-            conflicts=merger_conflicts,
-            user_message=message.text or "",
-        )
-        if not missing:
-            intro_text = live_text_or_fallback(
-                live_context,
-                "Отлично, спасибо! Данных достаточно. Переходим к подключению участников.",
-            )
-            await message.answer(
-                f"{summary_text}\n\n"
-                f"{intro_text}",
-                reply_markup=main_menu_keyboard(),
-            )
-            await send_next_step_after_brief(message, state)
-            return
-
-        missing_text = "\n".join(f"- {m}" for m in missing)
-        clarify_text = live_text_or_fallback(
-            live_context,
-            "🚨 <b>Осталось уточнить:</b>",
-        )
-        await message.answer(
-            f"{summary_text}\n\n"
-            f"{clarify_text}\n"
-            f"{missing_text}\n\n"
-            "Можно одним сообщением.",
-            reply_markup=main_menu_keyboard(),
-        )
+        await route_organizer_text_message(message, state, flow_step="organizer_clarify")
     except Exception as err:
         logging.exception("organizer_clarify_handler failed: %s", err)
         await message.answer(
@@ -1933,6 +2204,43 @@ async def text_fallback_handler(message: Message) -> None:
         event_code, event, role = recovered
         event_number = event.get("event_number")
         if role == "organizer":
+            intent = message_intent.classify_message_intent(
+                message.text or "",
+                role="organizer",
+                flow_step="organizer_clarify",
+            )
+            if intent == "conversation":
+                brief = event.get("brief") or {}
+                incoming = extract_brief_from_text(message.text or "")
+                brief_updated = message_intent.has_substantive_parsed_fields(incoming)
+                if brief_updated:
+                    brief = merge_brief(brief, incoming)
+                    EVENTS[event_code]["brief"] = brief
+                    touch_event(EVENTS[event_code])
+                    save_events()
+                missing = missing_brief_fields(brief)
+                live_context = build_live_prompt_context(
+                    role="organizer",
+                    flow_step="conversation",
+                    human_status="Живой диалог (recovery)",
+                    allowed_next_action="ask_clarification | continue_flow | none",
+                    last_system_action="conversation_turn",
+                    brief=brief,
+                    missing=missing,
+                    parser_result=live_response.build_parser_result(
+                        saved=brief_updated,
+                        confidence=parser_confidence_hint() if brief_updated else 0.0,
+                    ),
+                    conflicts=[],
+                    user_message=message.text or "",
+                )
+                reply = live_text_or_fallback(live_context, CONVERSATION_FALLBACK_ORGANIZER)
+                parts = [reply]
+                if brief_updated:
+                    parts.append(format_brief_update_message(brief, event_number=event_number))
+                await message.answer("\n\n".join(parts), reply_markup=main_menu_keyboard())
+                return
+
             existing_brief = event.get("brief") or {}
             incoming = extract_brief_from_text(message.text or "")
             brief = merge_brief(existing_brief, incoming)
@@ -1957,7 +2265,7 @@ async def text_fallback_handler(message: Message) -> None:
             if not missing:
                 await message.answer(
                     f"{summary_text}\n\n"
-                    "Отлично, базовых данных достаточно. Переходим к подключению участников.",
+                    f"{dialog_context.pick_variant(message.chat.id, dialog_context.COMPLETE_VARIANTS_ORGANIZER)}",
                     reply_markup=main_menu_keyboard(),
                 )
                 await send_next_step_after_brief_by_event(message, event_code)
@@ -1965,14 +2273,55 @@ async def text_fallback_handler(message: Message) -> None:
 
             missing_text = "\n".join(f"- {m}" for m in missing)
             await message.answer(
-                f"{summary_text}\n\n"
-                "🚨 <b>Уточните только это</b> (можно одним сообщением):\n"
-                f"{missing_text}",
+                f"{summary_text}\n\n{STATIC_CLARIFY_HEADER_DUMP}\n{missing_text}",
                 reply_markup=main_menu_keyboard(),
             )
             return
 
         if role == "participant":
+            intent = message_intent.classify_message_intent(
+                message.text or "",
+                role="participant",
+                flow_step="participant_contribute",
+            )
+            if intent == "conversation":
+                base_brief = event.get("brief") or {}
+                incoming = extract_brief_from_text(message.text or "")
+                brief_updated = message_intent.has_substantive_parsed_fields(incoming)
+                updated_brief = base_brief
+                if brief_updated:
+                    participant_name = (
+                        message.from_user.full_name
+                        if message.from_user and message.from_user.full_name
+                        else str(message.chat.id)
+                    )
+                    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+                    event["brief"] = updated_brief
+                    touch_event(event)
+                    save_events()
+                missing = missing_brief_fields(updated_brief)
+                live_context = build_live_prompt_context(
+                    role="participant",
+                    flow_step="conversation",
+                    human_status="Живой диалог (recovery)",
+                    allowed_next_action="continue_flow | none",
+                    last_system_action="conversation_turn",
+                    brief=updated_brief,
+                    missing=missing,
+                    parser_result=live_response.build_parser_result(
+                        saved=brief_updated,
+                        confidence=parser_confidence_hint() if brief_updated else 0.0,
+                    ),
+                    conflicts=[],
+                    user_message=message.text or "",
+                )
+                reply = live_text_or_fallback(live_context, CONVERSATION_FALLBACK_PARTICIPANT)
+                parts = [reply]
+                if brief_updated:
+                    parts.append(format_brief_for_participant(updated_brief, event_number=event_number))
+                await message.answer("\n\n".join(parts), reply_markup=main_menu_keyboard())
+                return
+
             base_brief = event.get("brief") or {}
             incoming = extract_brief_from_text(message.text or "")
             participant_name = (
@@ -1998,10 +2347,7 @@ async def text_fallback_handler(message: Message) -> None:
             missing_block = ""
             if missing:
                 missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
-                missing_block = (
-                    "\n\n🚨 <b>Нужно уточнить</b>\n"
-                    f"{missing_text}"
-                )
+                missing_block = "\n\n🚨 <b>Нужно уточнить</b>\n" f"{missing_text}"
             brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
             await emit_parse_log(
                 message.bot,
@@ -2015,7 +2361,7 @@ async def text_fallback_handler(message: Message) -> None:
                 brief_html=brief_html,
             )
             await message.answer(
-                "Спасибо, добавила твои пожелания отдельно — организатор увидит их без потери деталей.\n\n"
+                f"{dialog_context.pick_variant(message.chat.id, dialog_context.PARTICIPANT_BRIEF_INTRO_VARIANTS)}\n\n"
                 f"{brief_html}\n\n"
                 f"Проверь, пожалуйста: всё верно?{missing_block}",
                 reply_markup=participant_confirm_keyboard(),

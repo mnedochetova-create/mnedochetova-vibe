@@ -6,6 +6,15 @@ human_status: {{human_status}}
 allowed_next_action: {{allowed_next_action}}
 last_system_action: {{last_system_action}}
 
+step_context_human:
+{{step_context_human}}
+
+dialog_summary:
+{{dialog_summary}}
+
+last_bot_message:
+{{last_bot_message}}
+
 brief_json:
 {{brief_json}}
 

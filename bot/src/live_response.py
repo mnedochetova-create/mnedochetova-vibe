@@ -60,6 +60,9 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
         "{{human_status}}": str(context.get("human_status", "none")),
         "{{allowed_next_action}}": str(context.get("allowed_next_action", "none")),
         "{{last_system_action}}": str(context.get("last_system_action", "none")),
+        "{{step_context_human}}": str(context.get("step_context_human", "")),
+        "{{dialog_summary}}": str(context.get("dialog_summary", "")),
+        "{{last_bot_message}}": str(context.get("last_bot_message", "")),
         "{{brief_json}}": _as_json(context.get("brief_json", {})),
         "{{missing_fields_json}}": _as_json(context.get("missing_fields_json", [])),
         "{{parser_result_json}}": _as_json(context.get("parser_result_json", {})),
@@ -87,7 +90,7 @@ def _extract_json_payload(content: str) -> str:
     return text
 
 
-def _parse_live_response(content: str) -> Optional[Dict[str, Any]]:
+def _parse_live_response(content: str, *, max_chars: int = 1200) -> Optional[Dict[str, Any]]:
     payload = _extract_json_payload(content)
     if not payload:
         return None
@@ -102,8 +105,8 @@ def _parse_live_response(content: str) -> Optional[Dict[str, Any]]:
     confidence = parsed.get("confidence")
     if not isinstance(text, str) or not text.strip():
         return None
-    if len(text) > 1200:
-        text = text[:1200].rstrip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
     if tone not in ALLOWED_TONES:
         tone = "neutral"
     if not isinstance(confidence, (int, float)):
@@ -145,13 +148,16 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
         }
 
     model = os.getenv("LLM_LIVE_MODEL", os.getenv("LLM_PARSER_MODEL", "gpt-4o-mini"))
+    flow_step = str(context.get("flow_step", ""))
+    temperature = 0.55 if flow_step in {"conversation", "mixed"} else 0.4
+    max_chars = 500 if flow_step == "mixed" else 1200
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.4,
+        "temperature": temperature,
         "response_format": {"type": "json_object"},
     }
     req = urllib.request.Request(
@@ -168,7 +174,7 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
             raw = resp.read().decode("utf-8")
         parsed = json.loads(raw)
         content = parsed["choices"][0]["message"]["content"]
-        live = _parse_live_response(content)
+        live = _parse_live_response(content, max_chars=max_chars)
         if not live:
             preview = (content or "")[:200].replace("\n", " ")
             logging.warning("Live response fallback: invalid_json preview=%r", preview)
