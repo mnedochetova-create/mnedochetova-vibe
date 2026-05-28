@@ -1,10 +1,13 @@
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from env_util import env_flag
 
 
 LAST_PARSER_MODE = "rules_only"
@@ -30,7 +33,7 @@ def get_brief_parser_prompt() -> str:
 
 
 def parse_brief_with_llm(text: str) -> Dict[str, Any]:
-    enabled = os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true"
+    enabled = env_flag("USE_LLM_BRIEF_PARSER")
     api_key = os.getenv("LLM_API_KEY")
     if not enabled or not api_key:
         return {}
@@ -83,12 +86,44 @@ def parse_brief_with_llm(text: str) -> Dict[str, Any]:
         return {}
 
 
+# (stem in lowercased text, display name, default climate if user discusses weather/climate)
+_DESTINATION_HINTS: List[Tuple[str, str, str]] = [
+    ("грец", "Греция", "море/пляж"),
+    ("турц", "Турция", "море/пляж"),
+    ("кипр", "Кипр", "море/пляж"),
+    ("испан", "Испания", "море/пляж"),
+    ("итали", "Италия", "море/пляж"),
+    ("хорват", "Хорватия", "море/пляж"),
+    ("черногор", "Черногория", "море/пляж"),
+    ("болгар", "Болгария", "море/пляж"),
+    ("египет", "Египет", "море/пляж"),
+    ("таиланд", "Таиланд", "море/пляж"),
+    ("вьетнам", "Вьетнам", "море/пляж"),
+    ("оаэ", "ОАЭ", "море/пляж"),
+    ("дубай", "ОАЭ", "море/пляж"),
+    ("мальдив", "Мальдивы", "море/пляж"),
+]
+
+_MONTH_PATTERN = (
+    r"январ[ья]?|феврал[ья]?|март[а]?|апрел[ья]?|ма[йя]|июн[ья]?|июл[ья]?|"
+    r"август[а]?|сентябр[ья]?|октябр[ья]?|ноябр[ья]?|декабр[ья]?"
+)
+
+
+def _detect_destinations(t: str) -> List[Tuple[str, str]]:
+    found: List[Tuple[str, str]] = []
+    seen: set[str] = set()
+    for stem, name, default_climate in _DESTINATION_HINTS:
+        if stem in t and name not in seen:
+            found.append((name, default_climate))
+            seen.add(name)
+    return found
+
+
 def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     t = (text or "").lower()
     brief: Dict[str, Any] = {}
     brief["context_raw"] = (text or "").strip()
-
-    import re
 
     budget_value = None
     budget_suffix = ""
@@ -154,6 +189,13 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     for mon in months:
         if mon in t:
             brief.setdefault("months", []).append(mon)
+
+    m = re.search(
+        rf"(?:в\s+)?(конц[ае]?|начал[оае]?|середин[аы]?|первая\s+половина|вторая\s+половина)\s+({_MONTH_PATTERN})",
+        t,
+    )
+    if m:
+        brief["date_range_raw"] = m.group(0).strip()
 
     m = re.search(
         r"(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?\s*[-–]\s*(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{2,4}))?",
@@ -295,19 +337,30 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if parties:
         brief["party_preferences"] = parties
 
+    destinations = _detect_destinations(t)
+
     if "море" in t or "пляж" in t:
         brief["climate"] = "море/пляж"
-    if "горы" in t:
+    if "горы" in t or ("горн" in t and "климат" in t):
         brief["climate"] = "горы"
     if "экскурс" in t or "музе" in t:
         brief["trip_type"] = "экскурсии/город"
     if "all inclusive" in t or "оллинклюзив" in t or "всё включено" in t:
         brief["trip_type"] = "всё включено"
 
+    # «климат в Греции в конце августа» — направление + климат из контекста страны
+    if "климат" in t and not brief.get("climate") and destinations:
+        brief["climate"] = destinations[0][1]
+    if not brief.get("climate") and destinations:
+        if "тепл" in t or "жарк" in t or "солн" in t or "купан" in t or "загора" in t:
+            brief["climate"] = destinations[0][1]
+
     activity_preferences = []
+    for dest_name, _ in destinations:
+        activity_preferences.append(f"предпочтение по направлению: {dest_name}")
     if "ази" in t:
         activity_preferences.append("предпочтение по направлению: Азия")
-    if "европ" in t:
+    if "европ" in t and not destinations:
         activity_preferences.append("предпочтение по направлению: Европа")
     if "песчан" in t and ("пляж" in t or "море" in t):
         activity_preferences.append("песчаный пляж")
@@ -427,10 +480,7 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
 def extract_brief_from_text(text: str) -> Dict[str, Any]:
     global LAST_PARSER_MODE
     rule_based = extract_brief_rule_based(text)
-    llm_enabled = (
-        os.getenv("USE_LLM_BRIEF_PARSER", "false").strip().lower() == "true"
-        and bool(os.getenv("LLM_API_KEY", "").strip())
-    )
+    llm_enabled = env_flag("USE_LLM_BRIEF_PARSER") and bool(os.getenv("LLM_API_KEY", "").strip())
     llm_brief = parse_brief_with_llm(text)
     if not llm_enabled:
         LAST_PARSER_MODE = "rules_only"

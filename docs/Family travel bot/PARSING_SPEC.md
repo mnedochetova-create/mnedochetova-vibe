@@ -15,7 +15,8 @@
     - `bot/prompts/brief_parser_organizer_system_prompt.md`
     - `bot/prompts/brief_parser_participant_system_prompt.md`
     - `bot/prompts/brief_merger_system_prompt.md`
-- При сбое LLM основной сценарий остается работоспособным (fallback на текущий рабочий контур).
+- При сбое LLM основной сценарий остается работоспособным (fallback на rule-based контур).
+- Rule-based (всегда): страны (Греция, Турция, …), «в конце августа», «климат в &lt;стране&gt;» → направление + climate.
 
 ### 0.1 Live responses (формулировки, не парсинг)
 

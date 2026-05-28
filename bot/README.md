@@ -39,7 +39,7 @@
    - `cp .env.example .env`
    - заполнить `BOT_TOKEN`
    - при необходимости заполнить `LLM_API_KEY` (для следующих этапов)
-   - чтобы включить LLM-парсинг брифа: `USE_LLM_BRIEF_PARSER=true`
+   - чтобы включить LLM-парсинг брифа (рекомендуется вместе с `LLM_API_KEY`): `USE_LLM_BRIEF_PARSER=true`
    - при необходимости выбрать модель: `LLM_PARSER_MODEL=gpt-4o-mini`
    - чтобы включить "живые" ответы в текущем сценарии: `USE_LLM_LIVE_RESPONSES=true`
    - при необходимости выбрать модель живых ответов: `LLM_LIVE_MODEL=gpt-4o-mini`
