@@ -2,6 +2,21 @@
 
 Цель: сделать парсинг пользовательских сообщений предсказуемым, без додумывания, с прозрачным списком уточнений.
 
+## 0) Режимы парсинга (актуально)
+
+- **Legacy brief parsing (default):**
+  - используется текущая плоская схема полей (см. раздел 1);
+  - rule-based парсер + опциональное LLM-обогащение;
+  - включение LLM-слоя: `USE_LLM_BRIEF_PARSER=true`.
+- **Structured pipeline (feature flag):**
+  - `organizer parser` -> `participant parser` -> `brief merger/conflict detector`;
+  - включение: `USE_STRUCTURED_BRIEF_PIPELINE=true`;
+  - промпты:
+    - `bot/prompts/brief_parser_organizer_system_prompt.md`
+    - `bot/prompts/brief_parser_participant_system_prompt.md`
+    - `bot/prompts/brief_merger_system_prompt.md`
+- При сбое LLM основной сценарий остается работоспособным (fallback на текущий рабочий контур).
+
 ## 1) Единая схема полей
 
 - `context_raw` (`string`) — исходный текст пользователя (всегда сохраняется).
@@ -90,3 +105,29 @@
    - где неверно структурировала.
 4. Обновляем правила/промпт/валидацию.
 5. Повторяем до достижения целевых метрик.
+
+## 6) Structured pipeline: ответственность слоев
+
+### 6.1 Organizer parser
+- Извлекает только базовую рамку поездки от организатора.
+- Не добавляет participant-specific решения.
+- Не определяет конфликты.
+
+### 6.2 Participant parser
+- Извлекает только личный вклад участника.
+- Не перезаписывает базовую рамку организатора.
+- Фиксирует неясные фразы в `unclear_items`, не превращая их в факты.
+
+### 6.3 Brief merger / conflict detector
+- Объединяет уже структурированные JSON-входы.
+- Разделяет:
+  - `harmless_addition`,
+  - `preference_difference`,
+  - `hard_conflict`,
+  - `unclear`.
+- Формирует:
+  - единый `merged_brief`,
+  - `participant_summary`,
+  - `open_questions`,
+  - `next_best_action`,
+  - рекомендацию статуса события.
