@@ -96,13 +96,14 @@ def save_events() -> None:
 
 def normalize_text(value: str) -> str:
     text = (value or "").strip().lower()
-    for token in ["ℹ️", "ℹ", "🆘", "➕", "✨", "📂"]:
+    for token in ["ℹ️", "ℹ", "🆘", "➕", "✨", "📂", "🧭", "📤", "🔗", "✉️"]:
         text = text.replace(token, "")
     return " ".join(text.split())
 
 
 def is_capabilities_text(value: str) -> bool:
-    return normalize_text(value) == "что умеет бот"
+    normalized = normalize_text(value)
+    return normalized in {"как работает", "что умеет бот", "как это работает"}
 
 
 def is_help_text(value: str) -> bool:
@@ -110,11 +111,159 @@ def is_help_text(value: str) -> bool:
 
 
 def is_create_event_text(value: str) -> bool:
-    return normalize_text(value) == "создать событие"
+    normalized = normalize_text(value)
+    return normalized in {"новая поездка", "создать поездку", "создать событие"}
 
 
 def is_my_events_text(value: str) -> bool:
-    return normalize_text(value) == "мои события"
+    normalized = normalize_text(value)
+    return normalized in {"мои поездки", "мои события"}
+
+
+def is_current_trip_text(value: str) -> bool:
+    return normalize_text(value) == "текущая поездка"
+
+
+def build_invite_share_text(invite_link: str) -> str:
+    return (
+        "Привет! Я собираю вводные по нашей поездке.\n"
+        "Перейди по ссылке и напиши, что тебе важно: даты, бюджет, перелёт, отель, климат, "
+        "активности или ограничения.\n"
+        "Бот добавит твои пожелания в общий бриф:\n"
+        f"{invite_link}"
+    )
+
+
+def build_brief_share_text(brief_plain: str) -> str:
+    body = brief_plain.strip() or "— сводка уточняется —"
+    return (
+        "Привет! Вот сводка по нашей поездке — собрали в MyTravel.Lab.\n\n"
+        f"{body}\n\n"
+        "Если что-то нужно уточнить — напиши мне (организатору)."
+    )
+
+
+def participants_all_confirmed(event: Dict[str, Any]) -> bool:
+    participants = event.get("participants") or {}
+    if not participants:
+        return False
+    updates = event.get("participant_updates") or {}
+    for participant_id in participants:
+        row = updates.get(participant_id) or participants.get(participant_id) or {}
+        if not row.get("confirmed"):
+            return False
+    return True
+
+
+def can_offer_brief_confirm(event: Dict[str, Any]) -> bool:
+    if event.get("organizer_brief_confirmed_at"):
+        return False
+    brief = event.get("brief") or {}
+    if missing_brief_fields(brief):
+        return False
+    participants = event.get("participants") or {}
+    if not participants:
+        return True
+    return participants_all_confirmed(event)
+
+
+def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
+    lines: List[str] = []
+    label = f"Поездка #{event_number}" if isinstance(event_number, int) else "Поездка"
+    lines.append(label)
+
+    if brief.get("date_range_raw"):
+        lines.append(f"Даты: {brief['date_range_raw']}")
+    elif brief.get("months"):
+        lines.append("Даты: " + ", ".join(str(m) for m in brief["months"]))
+
+    if brief.get("budget_rub_max"):
+        lines.append(f"Бюджет: до {brief['budget_rub_max']:,} ₽".replace(",", " "))
+
+    group_parts: List[str] = []
+    if brief.get("adults"):
+        group_parts.append(f"{brief['adults']} взрослых")
+    if brief.get("kids_count"):
+        group_parts.append(f"{brief['kids_count']} детей")
+    if group_parts:
+        lines.append("Состав: " + ", ".join(group_parts))
+
+    if brief.get("flight_hours_max"):
+        lines.append(f"Перелёт: до {brief['flight_hours_max']} ч.")
+    elif brief.get("flight_hours_unrestricted"):
+        lines.append("Перелёт: без ограничений по длительности")
+    elif brief.get("transfers_allowed") is True:
+        lines.append("Перелёт: пересадки допустимы")
+    elif brief.get("transfers_allowed") is False:
+        lines.append("Перелёт: желательно без пересадок")
+
+    if brief.get("trip_duration_days_raw"):
+        lines.append(f"Длительность: {brief['trip_duration_days_raw']}")
+
+    if "visa_required" in brief:
+        lines.append("Визы: " + ("нужна" if brief["visa_required"] else "без визы"))
+
+    if brief.get("passports_status"):
+        lines.append(f"Загранпаспорта: {brief['passports_status']}")
+
+    if brief.get("climate"):
+        lines.append(f"Климат: {brief['climate']}")
+
+    if brief.get("trip_type"):
+        lines.append(f"Формат: {brief['trip_type']}")
+
+    activity = brief.get("activity_preferences") or []
+    if activity:
+        lines.append("Пожелания: " + "; ".join(str(a) for a in activity))
+
+    participant_preferences = brief.get("participant_preferences") or {}
+    if participant_preferences:
+        lines.append("")
+        lines.append("Участники:")
+        for name, prefs in participant_preferences.items():
+            chunk: List[str] = []
+            if prefs.get("budget_rub_max"):
+                chunk.append(f"бюджет до {prefs['budget_rub_max']:,} ₽".replace(",", " "))
+            if prefs.get("date_range_raw"):
+                chunk.append(f"даты {prefs['date_range_raw']}")
+            if prefs.get("climate"):
+                chunk.append(str(prefs["climate"]))
+            if prefs.get("context_raw") and not chunk:
+                chunk.append(str(prefs["context_raw"])[:200])
+            if chunk:
+                lines.append(f"— {name}: " + ", ".join(chunk))
+
+    return "\n".join(lines)
+
+
+BRIEF_READY_TO_CONFIRM_TEXT = (
+    "✅ <b>Бриф выглядит достаточно полным</b>\n\n"
+    "Проверь, что всё верно: состав, даты, бюджет, пожелания участников и ограничения.\n\n"
+    "Если всё ок — подтверди бриф. После этого его удобно переслать семье, турагенту или партнёру."
+)
+
+BRIEF_CONFIRMED_TEXT = (
+    "🎉 <b>Готово — бриф поездки собран</b>\n\n"
+    "Теперь у тебя единая картина: кто едет, когда, какой бюджет, что важно участникам "
+    "и какие ограничения учесть.\n\n"
+    "Можешь переслать бриф в чат, отправить турагенту или использовать как основу для подбора вариантов."
+)
+
+BRIEF_SHARE_INTRO_TEXT = (
+    "📤 <b>Поделиться брифом</b>\n\n"
+    "Я подготовила текст, который удобно переслать в общий чат или личку — со всей сводкой по поездке."
+)
+
+BRIEF_SHARE_DONE_TEXT = (
+    "Отлично. Если появятся новые пожелания — открой поездку через "
+    "<b>🧭 Текущая поездка</b> или создай новую."
+)
+
+PARTICIPANT_THANKS_TEXT = (
+    "✅ <b>Спасибо, я зафиксировала твои пожелания</b>\n\n"
+    "Организатор увидит их в общем брифе. Если захочешь что-то добавить — "
+    "напиши одним сообщением в этот чат."
+)
 
 
 def get_latest_event_for_chat(chat_id: int) -> Optional[tuple[str, Dict[str, Any], str]]:
@@ -148,6 +297,9 @@ def get_latest_event_for_chat(chat_id: int) -> Optional[tuple[str, Dict[str, Any
 
 
 async def handle_menu_shortcuts(message: Message) -> bool:
+    if is_current_trip_text(message.text or ""):
+        await current_trip_handler(message, None)
+        return True
     if is_my_events_text(message.text or ""):
         await my_events_handler(message, None)
         return True
@@ -438,7 +590,8 @@ def participant_confirm_keyboard() -> InlineKeyboardMarkup:
 def welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✨ Создать событие", callback_data="event:create")],
+            [InlineKeyboardButton(text="✨ Создать поездку", callback_data="event:create")],
+            [InlineKeyboardButton(text="ℹ️ Как это работает", callback_data="event:how")],
         ]
     )
 
@@ -446,15 +599,86 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 def organizer_next_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✨ Создать событие", callback_data="event:create")],
+            [InlineKeyboardButton(text="✨ Создать поездку", callback_data="event:create")],
         ]
     )
 
 
-def invite_keyboard() -> InlineKeyboardMarkup:
+def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="📤 Поделиться приглашением", callback_data="event:invite_share")],
+        [InlineKeyboardButton(text="🔗 Показать ссылку", callback_data="event:invite_link")],
+        [InlineKeyboardButton(text="✅ Я отправила ссылку", callback_data="event:invite_sent")],
+    ]
+    if event and can_offer_brief_confirm(event):
+        rows.append(
+            [InlineKeyboardButton(text="✅ Подтвердить бриф", callback_data="brief:confirm_prep")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def brief_ready_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📩 Показать ссылку для участников", callback_data="event:invite")],
+            [InlineKeyboardButton(text="✅ Подтвердить бриф", callback_data="brief:confirm")],
+            [InlineKeyboardButton(text="✏️ Дополнить ещё", callback_data="brief:edit")],
+            [InlineKeyboardButton(text="📌 Показать бриф", callback_data="event:show_brief")],
+        ]
+    )
+
+
+def brief_confirmed_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Поделиться брифом", callback_data="brief:share")],
+            [InlineKeyboardButton(text="📋 Текст для пересылки", callback_data="brief:share_text")],
+            [InlineKeyboardButton(text="📌 Посмотреть бриф", callback_data="event:show_brief")],
+            [InlineKeyboardButton(text="✨ Новая поездка", callback_data="event:create")],
+        ]
+    )
+
+
+def brief_share_intro_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Показать текст для пересылки", callback_data="brief:share_text")],
+            [InlineKeyboardButton(text="📌 Вернуться к брифу", callback_data="event:show_brief")],
+        ]
+    )
+
+
+def brief_after_share_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Я отправила бриф", callback_data="brief:share_done")],
+            [InlineKeyboardButton(text="📌 Вернуться к брифу", callback_data="event:show_brief")],
+        ]
+    )
+
+
+def brief_share_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📌 Посмотреть бриф", callback_data="event:show_brief")],
+            [InlineKeyboardButton(text="✨ Новая поездка", callback_data="event:create")],
+        ]
+    )
+
+
+def invite_after_share_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Я отправила участникам", callback_data="event:invite_done")],
+            [InlineKeyboardButton(text="📌 Вернуться к брифу", callback_data="event:show_brief")],
+        ]
+    )
+
+
+def invite_waiting_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📌 Показать бриф", callback_data="event:show_brief")],
+            [InlineKeyboardButton(text="📤 Отправить ссылку ещё раз", callback_data="event:invite_share")],
         ]
     )
 
@@ -482,12 +706,11 @@ def my_events_keyboard(events: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    # Простое меню (не inline), чтобы всегда было под рукой.
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✨ Создать событие")],
-            [KeyboardButton(text="📂 Мои события")],
-            [KeyboardButton(text="ℹ️ Что умеет бот"), KeyboardButton(text="🆘 Помощь")],
+            [KeyboardButton(text="🧭 Текущая поездка")],
+            [KeyboardButton(text="📂 Мои поездки"), KeyboardButton(text="✨ Новая поездка")],
+            [KeyboardButton(text="ℹ️ Как работает")],
         ],
         resize_keyboard=True,
     )
@@ -500,7 +723,6 @@ def help_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📝 Как написать вводные", callback_data="help:parser")],
             [InlineKeyboardButton(text="❓ Почему нужно уточнение", callback_data="help:clarify")],
             [InlineKeyboardButton(text="🔗 Проблема со ссылкой", callback_data="help:link")],
-            [InlineKeyboardButton(text="📂 Мои события", callback_data="help:myevents")],
             [InlineKeyboardButton(text="📨 Сообщить о проблеме", callback_data="help:report")],
         ]
     )
@@ -530,14 +752,13 @@ async def start_handler(message: Message, state: Optional[FSMContext] = None) ->
     if state is not None:
         await state.update_data(role="organizer")
     await message.answer(
-        "👋 <b>Привет! Я помогаю спокойно и быстро собрать вводные по поездке — без бесконечных уточнений в чате.</b>\n"
-        "Подойду, если вы планируете поездку с семьёй, друзьями или коллегами и хотите перейти от разрозненных сообщений к понятному плану.\n\n"
+        "👋 <b>Привет! Я помогу собрать вводные по поездке в единый бриф</b> — даты, бюджет, состав, пожелания участников и спорные моменты — без хаоса в переписке.\n\n"
         "⚙️ <b>Как это работает</b>\n"
-        "1) вы создаёте событие и отправляете вводные одним сообщением\n"
+        "1) ты создаёшь поездку и отправляешь вводные одним сообщением\n"
         "2) участники подключаются по ссылке и добавляют свои пожелания\n"
-        "3) я собираю всё в единый бриф, чтобы сразу видеть общую картину.\n\n"
-        "👑 <b>Ваша роль — организатор</b>\n"
-        "Организатор — тот, кто создаёт событие: задаёт базовые параметры и приглашает участников.",
+        "3) я собираю всё в одну картину и подсвечиваю расхождения.\n\n"
+        "👑 <b>Твоя роль — организатор</b>\n"
+        "Организатор задаёт базовые параметры и приглашает участников.",
         reply_markup=welcome_keyboard(),
     )
     await log_session_action(message.bot, message, "/start", role="organizer")
@@ -552,21 +773,21 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
         event_label = f"#{event_number}" if isinstance(event_number, int) else "без номера"
         role_label = "организатор" if snap.get("role") == "organizer" else "участник"
         context_block = (
-            "🧭 <b>Ваш контекст</b>\n"
-            f"• Событие: <b>{event_label}</b>\n"
+            "🧭 <b>Твой контекст</b>\n"
+            f"• Поездка: <b>{event_label}</b>\n"
             f"• Роль: <b>{role_label}</b>\n"
             f"• Этап: <b>{html.escape(str(snap.get('state') or 'не определено'))}</b>"
         )
     else:
         context_block = (
-            "🧭 <b>Ваш контекст</b>\n"
+            "🧭 <b>Твой контекст</b>\n"
             f"• Этап: <b>{html.escape(str(snap.get('state') or 'не определено'))}</b>\n"
-            "• Активное событие пока не найдено."
+            "• Активная поездка пока не найдена."
         )
 
     await message.answer(
         "🆘 <b>Помощь</b>\n"
-        "Выберите, с чем помочь: продолжить сценарий, разобраться с парсером или решить техническую проблему.\n\n"
+        "Выбери, с чем помочь: продолжить сценарий, разобраться с вводными или решить проблему со ссылкой.\n\n"
         f"{context_block}",
         reply_markup=help_keyboard(),
     )
@@ -581,8 +802,9 @@ async def capabilities_handler(message: Message) -> None:
         "1) принять вводные от организатора одним сообщением и уточнить только недостающее\n"
         "2) подключить участников по ссылке и собрать их пожелания\n"
         "3) собрать общую сводку и подсветить, где ожидания расходятся\n"
-        "4) сохранить прогресс события, чтобы вы могли вернуться к нему позже.\n\n"
-        "Этап рекомендаций по направлениям — следующий шаг развития."
+        "4) сохранить прогресс поездки, чтобы ты мог вернуться к ней позже.\n\n"
+        "Этап рекомендаций по направлениям — следующий шаг развития.",
+        reply_markup=main_menu_keyboard(),
     )
     await log_session_action(message.bot, message, "что умеет бот")
 
@@ -602,8 +824,8 @@ def _latest_event_activity_ts(event: Dict[str, Any]) -> int:
 def _event_status_info(event: Dict[str, Any]) -> Dict[str, str]:
     if event.get("archived_at"):
         return {"key": "archived", "icon": "🗄", "short": "архив"}
-    if event.get("completed_at"):
-        return {"key": "completed", "icon": "✅", "short": "завершено"}
+    if event.get("organizer_brief_confirmed_at") or event.get("completed_at"):
+        return {"key": "completed", "icon": "✅", "short": "бриф подтверждён"}
     missing = missing_brief_fields(event.get("brief") or {})
     if missing:
         return {"key": "needs_clarification", "icon": "🧩", "short": "нужны уточнения"}
@@ -687,9 +909,9 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
         )
     )
     await message.answer(
-        "📂 <b>Мои события</b>\n"
-        "Показываю актуальные события с ролью, статусом и следующим действием.\n"
-        "Выберите событие, чтобы продолжить:",
+        "📂 <b>Мои поездки</b>\n"
+        "Актуальные поездки с ролью, статусом и следующим шагом.\n"
+        "Выбери поездку, чтобы продолжить:",
         reply_markup=my_events_keyboard(items),
     )
     await log_session_action(message.bot, message, "мои события")
@@ -723,13 +945,11 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     save_events()
 
     await message.answer(
-        "Событие создано ✅\n"
-        f"Номер события: <b>#{event_number}</b>\n\n"
-        "Опишите вводные по поездке одним сообщением."
-        "\n\n"
+        "✅ <b>Поездка создана</b>\n"
+        f"Номер: <b>#{event_number}</b>\n\n"
+        "Напиши вводные одним сообщением — я разложу их в понятный бриф.\n\n"
         "📝 <b>Пример</b>\n"
-        "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»\n\n"
-        "Можно писать в свободной форме — я структурирую текст и соберу бриф.",
+        "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»",
         reply_markup=main_menu_keyboard(),
     )
     await log_session_action(
@@ -744,16 +964,16 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
 async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     event_code = data.get("event_code")
+    event = EVENTS.get(event_code) if event_code else None
 
     await message.answer(
-        "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
-        "Что сделать вам:\n"
-        "1) отправьте ссылку участникам\n"
-        "2) попросите их перейти по кнопке и ответить на короткие вопросы\n"
-        "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
-        reply_markup=invite_keyboard(),
+        "✨ <b>Базовый бриф уже собран</b>\n"
+        "Теперь можно подключить участников — они добавят свои пожелания, а я соберу всё в одну картину.\n\n"
+        "🔗 <b>Готово — ссылка для участников создана</b>\n"
+        "Теперь не нужно собирать пожелания вручную в чате: участники перейдут по ссылке, напишут вводные, "
+        "а я добавлю их в общий бриф и подсвечу расхождения.",
+        reply_markup=invite_ready_keyboard(event),
     )
-    event = EVENTS.get(event_code) if event_code else None
     await log_session_action(
         message.bot,
         message,
@@ -765,15 +985,15 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
 
 
 async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
-    await message.answer(
-        "Чтобы учесть мнения всех участников, осталось отправить приглашение.\n\n"
-        "Что сделать вам:\n"
-        "1) отправьте ссылку участникам\n"
-        "2) попросите их перейти по кнопке и ответить на короткие вопросы\n"
-        "3) после ответов я обновлю общий бриф и подсвечу расхождения, если они будут.",
-        reply_markup=invite_keyboard(),
-    )
     event = EVENTS.get(event_code) if event_code else None
+    await message.answer(
+        "✨ <b>Базовый бриф уже собран</b>\n"
+        "Теперь можно подключить участников — они добавят свои пожелания, а я соберу всё в одну картину.\n\n"
+        "🔗 <b>Готово — ссылка для участников создана</b>\n"
+        "Теперь не нужно собирать пожелания вручную в чате: участники перейдут по ссылке, напишут вводные, "
+        "а я добавлю их в общий бриф и подсвечу расхождения.",
+        reply_markup=invite_ready_keyboard(event),
+    )
     await log_session_action(
         message.bot,
         message,
@@ -814,9 +1034,9 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
         await callback.message.answer(
-            f"👑 Вы вернулись в событие <b>{html.escape(event_code)}</b> как организатор.\n\n"
+            f"👑 Ты снова в поездке <b>#{event_number if isinstance(event_number, int) else html.escape(event_code)}</b> как организатор.\n\n"
             f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
-            "Можете продолжить уточнения одним сообщением.",
+            "Продолжай уточнения одним сообщением.",
             reply_markup=main_menu_keyboard(),
         )
         return
@@ -827,37 +1047,245 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
     await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
     await state.set_state(FlowState.participant_contribute)
     await callback.message.answer(
-        f"👤 Вы вернулись в событие <b>{html.escape(event_code)}</b> как участник.\n\n"
+        f"👤 Ты снова в поездке <b>#{event_number if isinstance(event_number, int) else html.escape(event_code)}</b> как участник.\n\n"
         f"{format_brief_for_participant(brief, event_number=event_number)}\n\n"
-        "Напишите одним сообщением, что хотите дополнить в брифе.",
+        "Напиши одним сообщением, что дополнить в брифе.",
         reply_markup=main_menu_keyboard(),
     )
 
 
-async def event_invite_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
+async def _invite_link_for_state(state: FSMContext) -> Optional[str]:
     data = await state.get_data()
     event_code = data.get("event_code")
     event = EVENTS.get(event_code) if event_code else None
-    invite_link = event.get("invite_link") if event else None
-    if not invite_link:
-        await callback.message.answer(
-            "Ссылка пока недоступна. Попробуйте чуть позже — если не сработает, напишите /start.",
-            reply_markup=main_menu_keyboard(),
-        )
+    if not event:
+        return None
+    return event.get("invite_link")
+
+
+async def _organizer_event_from_state(state: FSMContext) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code:
+        return None, None
+    event = EVENTS.get(event_code)
+    if not event:
+        return None, None
+    return event_code, event
+
+
+async def notify_organizer_brief_ready(bot: Bot, event_code: str) -> None:
+    event = EVENTS.get(event_code)
+    if not event or not can_offer_brief_confirm(event):
         return
-    await callback.message.answer(
-        "Готово. Отправьте эту ссылку участникам:\n"
-        f"{invite_link}"
+    organizer_chat_id = event.get("organizer_chat_id")
+    if not organizer_chat_id:
+        return
+    await bot.send_message(
+        organizer_chat_id,
+        BRIEF_READY_TO_CONFIRM_TEXT,
+        reply_markup=brief_ready_keyboard(),
     )
 
 
-async def help_continue_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+async def brief_confirm_prep_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    recovered = get_latest_event_for_chat(callback.message.chat.id)
-    if not recovered:
+    _event_code, event = await _organizer_event_from_state(state)
+    if not event:
+        await callback.message.answer("Сначала создай поездку и собери базовый бриф.")
+        return
+    if event.get("organizer_brief_confirmed_at"):
+        await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+        return
+    if not can_offer_brief_confirm(event):
         await callback.message.answer(
-            "Пока не вижу активного события. Создайте новое событие кнопкой «✨ Создать событие».",
+            "Пока рано подтверждать бриф: дозаполни базовые вводные или дождись ответов участников.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    await callback.message.answer(BRIEF_READY_TO_CONFIRM_TEXT, reply_markup=brief_ready_keyboard())
+
+
+async def brief_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    event_code, event = await _organizer_event_from_state(state)
+    if not event or not event_code:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    if event.get("organizer_brief_confirmed_at"):
+        await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+        return
+    if not can_offer_brief_confirm(event):
+        await callback.message.answer(
+            "Пока нельзя подтвердить бриф: проверь вводные и ответы участников.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    ts = now_ts()
+    event["organizer_brief_confirmed_at"] = ts
+    event["completed_at"] = event.get("completed_at") or ts
+    touch_event(event)
+    save_events()
+    await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+    await log_session_action(
+        callback.bot,
+        callback.message,
+        "бриф подтверждён организатором",
+        role="organizer",
+        event_number=event.get("event_number"),
+    )
+    await flush_session_milestone(callback.bot, callback.message, "organizer_brief_confirmed")
+
+
+async def brief_edit_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(FlowState.organizer_clarify)
+    await callback.message.answer(
+        "Хорошо, напиши одним сообщением, что уточнить или дополнить в брифе.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def brief_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    _event_code, event = await _organizer_event_from_state(state)
+    if not event or not event.get("organizer_brief_confirmed_at"):
+        await callback.message.answer(
+            "Сначала подтверди бриф — тогда я подготовлю текст для пересылки.",
+            reply_markup=brief_ready_keyboard() if event and can_offer_brief_confirm(event) else main_menu_keyboard(),
+        )
+        return
+    await callback.message.answer(BRIEF_SHARE_INTRO_TEXT, reply_markup=brief_share_intro_keyboard())
+
+
+async def brief_share_text_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    _event_code, event = await _organizer_event_from_state(state)
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    if not event.get("organizer_brief_confirmed_at"):
+        if can_offer_brief_confirm(event):
+            await callback.message.answer(
+                "Сначала подтверди бриф на предыдущем шаге.",
+                reply_markup=brief_ready_keyboard(),
+            )
+        else:
+            await callback.message.answer("Сначала собери и подтверди бриф поездки.")
+        return
+    brief = event.get("brief") or {}
+    plain = format_brief_plain_for_share(brief, event.get("event_number"))
+    share_text = html.escape(build_brief_share_text(plain))
+    await callback.message.answer(
+        "📋 <b>Скопируй и отправь</b>\n"
+        "Ниже текст для пересылки. Можешь отредактировать формулировки перед отправкой.\n\n"
+        f"<pre>{share_text}</pre>",
+        reply_markup=brief_after_share_keyboard(),
+    )
+
+
+async def brief_share_done_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("Принято")
+    await callback.message.answer(BRIEF_SHARE_DONE_TEXT, reply_markup=brief_share_done_keyboard())
+
+
+def participant_thanks_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Дополнить ещё", callback_data="participant:edit")],
+            [InlineKeyboardButton(text="📌 Посмотреть бриф", callback_data="event:show_brief")],
+        ]
+    )
+
+
+async def event_how_callback_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await capabilities_handler(callback.message)
+
+
+async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    invite_link = await _invite_link_for_state(state)
+    if not invite_link:
+        await callback.message.answer(
+            "Ссылка пока недоступна. Попробуй /start или создай новую поездку.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    _event_code, event = await _organizer_event_from_state(state)
+    await callback.message.answer(
+        "🔗 <b>Ссылка для участников</b>\n"
+        f"<code>{html.escape(invite_link)}</code>",
+        reply_markup=invite_ready_keyboard(event),
+    )
+
+
+async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    invite_link = await _invite_link_for_state(state)
+    if not invite_link:
+        await callback.message.answer(
+            "Ссылка пока недоступна. Попробуй /start или создай новую поездку.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    share_text = html.escape(build_invite_share_text(invite_link))
+    await callback.message.answer(
+        "📤 <b>Текст для пересылки участникам</b>\n"
+        "Скопируй и отправь в общий чат или личные сообщения:\n\n"
+        f"<pre>{share_text}</pre>",
+        reply_markup=invite_after_share_keyboard(),
+    )
+
+
+async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await callback.message.answer(
+        "⏳ <b>Ссылка готова</b>\n"
+        "Ждём ответы участников. Как только кто-то добавит пожелания, я обновлю бриф и покажу, что изменилось.",
+        reply_markup=invite_waiting_keyboard(),
+    )
+
+
+async def event_invite_done_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("Принято")
+    await callback.message.answer(
+        "⏳ <b>Ссылка готова</b>\n"
+        "Ждём ответы участников. Как только кто-то добавит пожелания, я обновлю бриф и покажу, что изменилось.",
+        reply_markup=invite_waiting_keyboard(),
+    )
+
+
+async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    role = data.get("role") or "organizer"
+    if not event_code:
+        recovered = get_latest_event_for_chat(callback.message.chat.id)
+        if not recovered:
+            await callback.message.answer("Пока нет активного брифа. Создай поездку через «✨ Новая поездка».")
+            return
+        event_code, event, role = recovered
+        await state.update_data(event_code=event_code, role=role)
+    event = EVENTS.get(event_code)
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    brief = event.get("brief") or {}
+    event_number = event.get("event_number")
+    if role == "participant":
+        body = format_brief_for_participant(brief, event_number=event_number)
+    else:
+        body = format_brief_update_message(brief, event_number=event_number)
+    await callback.message.answer(body, reply_markup=main_menu_keyboard())
+
+
+async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: Optional[Any] = None) -> None:
+    recovered = get_latest_event_for_chat(message.chat.id)
+    if not recovered:
+        await message.answer(
+            "Пока не вижу активной поездки. Создай новую кнопкой «✨ Новая поездка» или через /start.",
             reply_markup=main_menu_keyboard(),
         )
         return
@@ -866,32 +1294,50 @@ async def help_continue_callback_handler(callback: CallbackQuery, state: FSMCont
     event_number = event.get("event_number")
     if role == "organizer":
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
-        await state.set_state(FlowState.organizer_clarify)
-        await callback.message.answer(
-            f"🔁 Продолжаем событие <b>#{event_number if isinstance(event_number, int) else '—'}</b>.\n\n"
+        missing = missing_brief_fields(brief)
+        if missing:
+            await state.set_state(FlowState.organizer_clarify)
+        else:
+            await state.set_state(FlowState.organizer_clarify)
+        await message.answer(
+            f"🧭 <b>Текущая поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
             f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
-            "Напишите одним сообщением, что хотите уточнить или дополнить.",
+            "Напиши одним сообщением, что уточнить или дополнить.",
             reply_markup=main_menu_keyboard(),
         )
+        if not missing and event.get("invite_link"):
+            await message.answer(
+                "Ссылка для участников уже есть — можешь поделиться ещё раз.",
+                reply_markup=invite_waiting_keyboard(),
+            )
         return
-    participant_name = (
-        callback.from_user.full_name if callback.from_user and callback.from_user.full_name else str(callback.message.chat.id)
-    )
+    participant_name = from_user.full_name if from_user and getattr(from_user, "full_name", None) else str(message.chat.id)
     await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
     await state.set_state(FlowState.participant_contribute)
-    await callback.message.answer(
-        f"🔁 Продолжаем событие <b>#{event_number if isinstance(event_number, int) else '—'}</b>.\n\n"
+    await message.answer(
+        f"🧭 <b>Текущая поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
         f"{format_brief_for_participant(brief, event_number=event_number)}\n\n"
-        "Напишите одним сообщением, что важно лично вам.",
+        "Напиши одним сообщением, что важно лично тебе.",
         reply_markup=main_menu_keyboard(),
     )
+
+
+async def current_trip_handler(message: Message, state: FSMContext) -> None:
+    logging.info("Current trip requested by chat_id=%s", message.chat.id)
+    await resume_latest_trip(message, state, from_user=message.from_user)
+    await log_session_action(message.bot, message, "текущая поездка")
+
+
+async def help_continue_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await resume_latest_trip(callback.message, state, from_user=callback.from_user)
 
 
 async def help_parser_callback_handler(callback: CallbackQuery) -> None:
     await callback.answer()
     await callback.message.answer(
         "📝 <b>Как написать вводные</b>\n"
-        "Пишите свободно, одним сообщением. Я сама разложу текст по полям.\n\n"
+        "Пиши свободно, одним сообщением. Я сама разложу текст по полям.\n\n"
         "Пример:\n"
         "«2 взрослых, август, бюджет до 300к, перелёт до 5 часов, без визы, хотим море и экскурсии»\n\n"
         "Чем конкретнее формулировки, тем меньше уточняющих вопросов.",
@@ -915,7 +1361,7 @@ async def help_clarify_callback_handler(callback: CallbackQuery, state: FSMConte
         "❓ <b>Почему я прошу уточнение</b>\n"
         "Эти пункты нужны, чтобы не ошибиться в итоговом брифе:\n"
         f"{missing_text}\n\n"
-        "Можете ответить одним сообщением в свободной форме.",
+        "Можешь ответить одним сообщением в свободной форме.",
         reply_markup=help_keyboard(),
     )
 
@@ -926,27 +1372,27 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
     snap = context_snapshot(callback.message.chat.id, fsm_state)
     if not snap.get("has_event"):
         await callback.message.answer(
-            "Сначала создайте событие, и я дам кнопку со ссылкой для участников.",
+            "Сначала создай поездку — тогда появится ссылка для участников.",
             reply_markup=help_keyboard(),
         )
         return
     if snap.get("role") != "organizer":
         await callback.message.answer(
-            "Ссылку отправляет организатор. Если не получили её, попросите организатора нажать «📩 Показать ссылку для участников».",
+            "Ссылку отправляет организатор. Если её нет — попроси организатора нажать «📤 Поделиться приглашением».",
             reply_markup=help_keyboard(),
         )
         return
     if not snap.get("invite_ready"):
         await callback.message.answer(
-            "Ссылка ещё не готова. Заполните базовый бриф, и кнопка для приглашения станет доступной.",
+            "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
             reply_markup=help_keyboard(),
         )
         return
     await callback.message.answer(
         "Если участник не может войти:\n"
-        "1) попросите открыть ссылку заново\n"
-        "2) попросите отправить /start в боте\n"
-        "3) при необходимости нажмите «📩 Показать ссылку для участников» ещё раз.",
+        "1) попроси открыть ссылку заново\n"
+        "2) попроси отправить /start в боте\n"
+        "3) при необходимости нажми «📤 Поделиться приглашением» ещё раз.",
         reply_markup=help_keyboard(),
     )
 
@@ -972,9 +1418,9 @@ async def help_report_callback_handler(callback: CallbackQuery, state: FSMContex
         context = f"• Этап: {snap.get('state')}\n• Активное событие: не найдено"
     await callback.message.answer(
         "📨 <b>Сообщить о проблеме</b>\n"
-        "Отправьте одним сообщением:\n"
-        "1) что вы нажали\n"
-        "2) что ожидали увидеть\n"
+        "Отправь одним сообщением:\n"
+        "1) что нажала\n"
+        "2) что ожидала увидеть\n"
         "3) что пришло фактически\n\n"
         f"Контекст для сообщения:\n{context}",
         reply_markup=help_keyboard(),
@@ -989,16 +1435,16 @@ async def role_callback_handler(callback: CallbackQuery, state: FSMContext) -> N
     if data == "role:organizer":
         await state.update_data(role="organizer")
         await callback.message.answer(
-            "Отлично. Раз вы создаёте событие — вы организатор.\n\n"
-            "Нажмите кнопку ниже, чтобы создать событие и начать сбор вводных.",
+            "Отлично. Раз ты создаёшь поездку — ты организатор.\n\n"
+            "Нажми кнопку ниже, чтобы начать сбор вводных.",
             reply_markup=organizer_next_keyboard(),
         )
         return
 
     await state.update_data(role="participant")
     await callback.message.answer(
-        "Вы — участник. Чтобы войти в событие, откройте ссылку от организатора.\n\n"
-        "Когда вы заходите по ссылке, я подключаю вас к событию и задам короткие вопросы по вашим предпочтениям.",
+        "Ты — участник. Чтобы войти в поездку, открой ссылку от организатора.\n\n"
+        "После перехода по ссылке я подключу тебя к брифу — можно сразу написать пожелания одним сообщением.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -1013,8 +1459,8 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     event = EVENTS.get(event_code)
     if not event:
         await message.answer(
-            "Похоже, ссылка устарела или событие уже не активно.\n"
-            "Попросите организатора прислать новую ссылку."
+            "Похоже, ссылка устарела или поездка уже не активна.\n"
+            "Попроси организатора прислать новую ссылку."
         )
         return
 
@@ -1046,14 +1492,11 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     )
     await state.set_state(FlowState.participant_contribute)
     await message.answer(
-        "✅ <b>Вы подключены к событию поездки.</b>\n"
-        f"Номер события: <b>#{event_number if isinstance(event_number, int) else '—'}</b>\n\n"
-        "Вас пригласил организатор, чтобы собрать мнения участников и согласовать общий бриф.\n\n"
-        "👤 <b>Ваша роль — участник</b>\n"
-        "Вы добавляете личные пожелания и ограничения, а я встраиваю их в общую картину без потери важных деталей.\n\n"
+        "✅ <b>Ты подключён к поездке</b>\n"
+        f"Номер: <b>#{event_number if isinstance(event_number, int) else '—'}</b>\n\n"
+        "Организатор уже собрал базовые вводные — ты можешь добавить то, что важно лично тебе.\n\n"
         "✍️ <b>Что сделать сейчас</b>\n"
-        "Прочитайте текущий бриф ниже и дополните его одним сообщением:\n"
-        "что важно лично вам (бюджет, даты, перелёт, документы, климат, формат отдыха)."
+        "Посмотри бриф ниже и напиши одним сообщением пожелания: даты, бюджет, перелёт, отель, климат, активности или ограничения."
     )
     await message.answer(
         f"{format_brief_for_participant(event_brief, event_number=event_number)}"
@@ -1174,12 +1617,12 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     )
     intro_text = live_text_or_fallback(
         live_context,
-        "Спасибо, добавила ваши вводные в бриф.",
+        "Спасибо, добавила твои пожелания отдельно — организатор увидит их без потери деталей.",
     )
     await message.answer(
         f"{intro_text}\n\n"
         f"{brief_html}\n\n"
-        f"Проверьте, пожалуйста: всё верно?{missing_block}",
+        f"Проверь, пожалуйста: всё верно?{missing_block}",
         reply_markup=participant_confirm_keyboard(),
     )
 
@@ -1208,8 +1651,8 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
         callback.from_user.full_name if callback.from_user else str(callback.message.chat.id)
     )
     await callback.message.answer(
-        "Принято, спасибо ✅\n"
-        "Отправляю обновлённый бриф организатору."
+        PARTICIPANT_THANKS_TEXT,
+        reply_markup=participant_thanks_keyboard(),
     )
 
     organizer_chat_id = event.get("organizer_chat_id")
@@ -1218,10 +1661,14 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
         user_caption = f"@{username}" if username else participant_name
         await callback.bot.send_message(
             organizer_chat_id,
-            "🔔 <b>Обновление от участника</b>\n\n"
-            f"{html.escape(user_caption)} дополнил(а) бриф и подтвердил(а), что всё верно.\n\n"
+            "🔔 <b>Участник добавил пожелания</b>\n"
+            "Я обновила бриф и отдельно показала, что изменилось.\n\n"
+            f"{html.escape(user_caption)} подтвердил(а), что всё верно.\n\n"
             f"{format_brief_for_participant(event.get('brief') or {}, event_number=event.get('event_number'))}",
+            reply_markup=invite_waiting_keyboard(),
         )
+        if participants_all_confirmed(event):
+            await notify_organizer_brief_ready(callback.bot, event_code)
 
     await log_session_action(
         callback.bot,
@@ -1237,7 +1684,7 @@ async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMC
     await callback.answer()
     await state.set_state(FlowState.participant_contribute)
     await callback.message.answer(
-        "Хорошо, напишите одним сообщением, что нужно уточнить или добавить в бриф."
+        "Хорошо, напиши одним сообщением, что уточнить или добавить в бриф."
     )
 
 
@@ -1564,15 +2011,23 @@ async def text_fallback_handler(message: Message) -> None:
                 brief_html=brief_html,
             )
             await message.answer(
-                "Спасибо, добавила ваши вводные в бриф.\n\n"
+                "Спасибо, добавила твои пожелания отдельно — организатор увидит их без потери деталей.\n\n"
                 f"{brief_html}\n\n"
-                f"Проверьте, пожалуйста: всё верно?{missing_block}",
+                f"Проверь, пожалуйста: всё верно?{missing_block}",
                 reply_markup=participant_confirm_keyboard(),
             )
             return
 
     await message.answer(
-        "Чтобы продолжить, выберите действие в меню ниже.",
+        "Чтобы продолжить, выбери действие в меню ниже.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def cancel_handler(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Ок, прервала текущий ввод. Можешь вернуться к поездке через «🧭 Текущая поездка».",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -1590,7 +2045,8 @@ async def main() -> None:
     # Handle both plain /start and /start <payload> deep-links.
     dp.message.register(start_payload_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
-    dp.message.register(new_event_handler, Command("new"))
+    dp.message.register(cancel_handler, Command("cancel"))
+    dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
     dp.message.register(new_event_handler, F.text.func(is_create_event_text))
     dp.message.register(my_events_handler, F.text.func(is_my_events_text))
     dp.message.register(capabilities_handler, F.text.func(is_capabilities_text))
@@ -1603,7 +2059,18 @@ async def main() -> None:
     dp.callback_query.register(role_callback_handler, F.data.startswith("role:"))
     dp.callback_query.register(event_create_callback_handler, F.data == "event:create")
     dp.callback_query.register(event_open_callback_handler, F.data.startswith("event:open:"))
-    dp.callback_query.register(event_invite_callback_handler, F.data == "event:invite")
+    dp.callback_query.register(brief_confirm_prep_callback_handler, F.data == "brief:confirm_prep")
+    dp.callback_query.register(brief_confirm_callback_handler, F.data == "brief:confirm")
+    dp.callback_query.register(brief_edit_callback_handler, F.data == "brief:edit")
+    dp.callback_query.register(brief_share_callback_handler, F.data == "brief:share")
+    dp.callback_query.register(brief_share_text_callback_handler, F.data == "brief:share_text")
+    dp.callback_query.register(brief_share_done_callback_handler, F.data == "brief:share_done")
+    dp.callback_query.register(event_how_callback_handler, F.data == "event:how")
+    dp.callback_query.register(event_invite_link_callback_handler, F.data == "event:invite_link")
+    dp.callback_query.register(event_invite_share_callback_handler, F.data == "event:invite_share")
+    dp.callback_query.register(event_invite_sent_callback_handler, F.data == "event:invite_sent")
+    dp.callback_query.register(event_invite_done_callback_handler, F.data == "event:invite_done")
+    dp.callback_query.register(event_show_brief_callback_handler, F.data == "event:show_brief")
     dp.callback_query.register(help_continue_callback_handler, F.data == "help:continue")
     dp.callback_query.register(help_parser_callback_handler, F.data == "help:parser")
     dp.callback_query.register(help_clarify_callback_handler, F.data == "help:clarify")
@@ -1615,9 +2082,9 @@ async def main() -> None:
 
     await bot.set_my_commands(
         [
-            BotCommand(command="start", description="Запуск бота"),
-            BotCommand(command="help", description="Что умеет бот"),
-            BotCommand(command="new", description="Создать событие"),
+            BotCommand(command="start", description="Перезапустить бота"),
+            BotCommand(command="help", description="Помощь, если застрял"),
+            BotCommand(command="cancel", description="Отменить текущий ввод"),
         ]
     )
 
