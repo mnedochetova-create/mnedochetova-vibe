@@ -402,6 +402,9 @@ def build_live_prompt_context(
 
 def live_text_or_fallback(context: Dict[str, Any], fallback_text: str) -> str:
     result = live_response.generate_live_response(context, fallback_text)
+    source = str(result.get("source") or "unknown")
+    if source != "llm":
+        logging.info("Live response using fallback (source=%s)", source)
     return str(result.get("assistant_text") or fallback_text)
 
 

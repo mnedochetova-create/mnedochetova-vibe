@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -72,10 +73,27 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
     return out
 
 
+def _extract_json_payload(content: str) -> str:
+    text = (content or "").strip()
+    if not text:
+        return ""
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
+    if fence:
+        return fence.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def _parse_live_response(content: str) -> Optional[Dict[str, Any]]:
+    payload = _extract_json_payload(content)
+    if not payload:
+        return None
     try:
-        parsed = json.loads(content)
-    except Exception:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
         return None
     if not isinstance(parsed, dict):
         return None
@@ -152,7 +170,8 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
         content = parsed["choices"][0]["message"]["content"]
         live = _parse_live_response(content)
         if not live:
-            logging.info("Live response fallback: invalid_json")
+            preview = (content or "")[:200].replace("\n", " ")
+            logging.warning("Live response fallback: invalid_json preview=%r", preview)
             return {
                 "assistant_text": fallback_text,
                 "tone": "neutral",

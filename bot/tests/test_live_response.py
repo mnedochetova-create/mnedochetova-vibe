@@ -29,6 +29,14 @@ def test_generate_live_response_falls_back_when_disabled(monkeypatch) -> None:
     assert result["source"] == "fallback_disabled"
 
 
+def test_parse_live_response_strips_markdown_fence() -> None:
+    raw = '```json\n{"assistant_text":"Привет, поняла вводные.","tone":"supportive","confidence":0.9}\n```'
+    parsed = live_response._parse_live_response(raw)
+    assert parsed is not None
+    assert parsed["assistant_text"] == "Привет, поняла вводные."
+    assert parsed["tone"] == "supportive"
+
+
 def test_detect_field_changes_added_and_updated() -> None:
     before = {"budget_rub_max": 200000, "months": ["июль"]}
     incoming = {"budget_rub_max": 300000, "trip_type": "экскурсии/город"}

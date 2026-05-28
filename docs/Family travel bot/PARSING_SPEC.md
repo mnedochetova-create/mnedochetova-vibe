@@ -24,7 +24,7 @@
 - Обязателен `LLM_API_KEY`; модель: `LLM_LIVE_MODEL` (fallback: `LLM_PARSER_MODEL`).
 - Промпты: `bot/prompts/live_response_system_prompt.md`, `live_response_user_prompt_template.md`.
 - **Область:** только короткий intro при обработке текста организатора/участника (`organizer_dump`, `organizer_clarify`, `participant_contribute`). Меню, приглашение, sharing, help — статические тексты.
-- Диагностика: логи Railway `Runtime flags: live_responses=...`; при успехе — `Live response from LLM`. Подробнее: `SCENARIO_AUDIT.md` §2.
+- Диагностика: логи Railway `Runtime flags: live_responses=...`; при успехе — `Live response from LLM`. Подробнее: `LIVE_RESPONSE.md`, `SCENARIO_AUDIT.md` §2.
 
 ## 1) Единая схема полей
 
