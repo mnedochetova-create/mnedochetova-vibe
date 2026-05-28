@@ -128,6 +128,39 @@ def is_current_trip_text(value: str) -> bool:
     return normalize_text(value) == "текущая поездка"
 
 
+def user_display_first_name(user: Any) -> str:
+    if not user:
+        return ""
+    return (getattr(user, "first_name", None) or "").strip()
+
+
+def format_start_greeting(user: Any) -> str:
+    name = user_display_first_name(user)
+    hello = f"Привет, {html.escape(name)}!" if name else "Привет!"
+    return (
+        f"👋 <b>{hello}</b>\n\n"
+        "Я <b>MyTravel.Lab</b> — бот, который помогает собрать общий бриф поездки "
+        "для всей компании.\n\n"
+        "<b>Как это работает:</b>\n"
+        "1. Ты пишешь вводные своими словами.\n"
+        "2. Я формирую структурированный бриф.\n"
+        "3. Участники добавляют пожелания по ссылке.\n"
+        "4. Я собираю всё в одну картину и подсвечиваю расхождения.\n\n"
+        "Нажми <b>✨ Создать поездку</b>, чтобы начать."
+    )
+
+
+def format_trip_created_organizer_message(event_number: Any) -> str:
+    num = event_number if isinstance(event_number, int) else "—"
+    return (
+        f"✨ <b>Поездка создана</b> · #{num}\n\n"
+        "<b>Твоя роль:</b> организатор — ты собираешь вводные и приглашаешь участников.\n\n"
+        "Напиши <b>своими словами одним сообщением</b> — например:\n"
+        "«2 взрослых, август, бюджет до 300к, перелёт до 5 часов, без визы, "
+        "хотим море и экскурсии»"
+    )
+
+
 def build_invite_share_text(invite_link: str) -> str:
     return (
         "Привет! Я собираю вводные по нашей поездке.\n"
@@ -260,7 +293,18 @@ BRIEF_SHARE_INTRO_TEXT = (
 
 BRIEF_SHARE_DONE_TEXT = (
     "Отлично. Если появятся новые пожелания — открой поездку через "
-    "<b>🧭 Текущая поездка</b> или создай новую."
+    "<b>📂 Мои поездки</b> или создай новую кнопкой <b>✨ Новая поездка</b>."
+)
+
+BOT_CAPABILITIES_HELP_BLOCK = (
+    "ℹ️ <b>Что умеет бот</b>\n"
+    "Собираю вводные всей компании в единый бриф — без анкет и таблиц.\n\n"
+    "<b>Сейчас я умею:</b>\n"
+    "• принять вводные организатора одним сообщением и уточнить только недостающее\n"
+    "• подключить участников по ссылке и собрать их пожелания\n"
+    "• собрать общую сводку и подсветить расхождения\n"
+    "• сохранить прогресс, чтобы вернуться к поездке позже\n\n"
+    "Рекомендации по направлениям — следующий этап развития."
 )
 
 PARTICIPANT_THANKS_TEXT = (
@@ -439,14 +483,8 @@ async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
 
 
 async def handle_menu_shortcuts(message: Message, state: Optional[FSMContext] = None) -> bool:
-    if is_current_trip_text(message.text or ""):
-        await current_trip_handler(message, state)
-        return True
     if is_my_events_text(message.text or ""):
         await my_events_handler(message, state)
-        return True
-    if is_capabilities_text(message.text or ""):
-        await capabilities_handler(message)
         return True
     if is_help_text(message.text or ""):
         await help_handler(message)
@@ -1297,7 +1335,6 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✨ Создать поездку", callback_data="event:create")],
-            [InlineKeyboardButton(text="ℹ️ Как это работает", callback_data="event:how")],
         ]
     )
 
@@ -1414,9 +1451,7 @@ def my_events_keyboard(events: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🧭 Текущая поездка")],
             [KeyboardButton(text="📂 Мои поездки"), KeyboardButton(text="✨ Новая поездка")],
-            [KeyboardButton(text="ℹ️ Как работает")],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -1459,18 +1494,8 @@ async def start_handler(message: Message, state: Optional[FSMContext] = None) ->
     if state is not None:
         await state.update_data(role="organizer")
     await message.answer(
-        "👋 <b>Привет! Я помогу собрать вводные по поездке в единый бриф</b> — даты, бюджет, состав, пожелания участников и спорные моменты — без хаоса в переписке.\n\n"
-        "⚙️ <b>Как это работает</b>\n"
-        "1) ты создаёшь поездку и отправляешь вводные одним сообщением\n"
-        "2) участники подключаются по ссылке и добавляют свои пожелания\n"
-        "3) я собираю всё в одну картину и подсвечиваю расхождения.\n\n"
-        "👑 <b>Твоя роль — организатор</b>\n"
-        "Организатор задаёт базовые параметры и приглашает участников.",
+        format_start_greeting(message.from_user),
         reply_markup=welcome_keyboard(),
-    )
-    await message.answer(
-        "Можешь нажать «✨ Создать поездку» или сразу написать вводные одним сообщением — я создам поездку автоматически.",
-        reply_markup=main_menu_keyboard(),
     )
     await log_session_action(message.bot, message, "/start", role="organizer")
 
@@ -1497,6 +1522,7 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
         )
 
     await message.answer(
+        f"{BOT_CAPABILITIES_HELP_BLOCK}\n\n"
         "🆘 <b>Помощь</b>\n"
         "Выбери, с чем помочь: продолжить сценарий, разобраться с вводными или решить проблему со ссылкой.\n\n"
         f"{context_block}",
@@ -1507,16 +1533,7 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
 
 async def capabilities_handler(message: Message) -> None:
     logging.info("Capabilities requested by chat_id=%s", message.chat.id)
-    await message.answer(
-        "Я помогаю группе договориться без хаоса в переписке: собираю вводные в единый бриф и показываю общую картину.\n\n"
-        "Сейчас я умею:\n"
-        "1) принять вводные от организатора одним сообщением и уточнить только недостающее\n"
-        "2) подключить участников по ссылке и собрать их пожелания\n"
-        "3) собрать общую сводку и подсветить, где ожидания расходятся\n"
-        "4) сохранить прогресс поездки, чтобы ты мог вернуться к ней позже.\n\n"
-        "Этап рекомендаций по направлениям — следующий шаг развития.",
-        reply_markup=main_menu_keyboard(),
-    )
+    await message.answer(BOT_CAPABILITIES_HELP_BLOCK, reply_markup=main_menu_keyboard())
     await log_session_action(message.bot, message, "что умеет бот")
 
 
@@ -1630,7 +1647,11 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
 
 async def new_event_handler(message: Message, state: FSMContext) -> None:
     logging.info("New event requested by chat_id=%s", message.chat.id)
-    await state.update_data(organizer_chat_id=message.chat.id)
+    await state.update_data(
+        role="organizer",
+        organizer_chat_id=message.chat.id,
+        brief={},
+    )
     await state.set_state(FlowState.organizer_dump)
     event_code = new_event_code()
     event_number = next_event_number()
@@ -1656,11 +1677,7 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     save_events()
 
     await message.answer(
-        "✅ <b>Поездка создана</b>\n"
-        f"Номер: <b>#{event_number}</b>\n\n"
-        "Напиши вводные одним сообщением — я разложу их в понятный бриф.\n\n"
-        "📝 <b>Пример</b>\n"
-        "«2 взрослых + ребёнок 6 лет, июль/август, море, бюджет до 250к, перелёт до 5 часов, без визы»",
+        format_trip_created_organizer_message(event_number),
         reply_markup=main_menu_keyboard(),
     )
     await log_session_action(
@@ -2011,7 +2028,7 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
         else:
             await state.set_state(FlowState.organizer_clarify)
         await message.answer(
-            f"🧭 <b>Текущая поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
+            f"📂 <b>Поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
             f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
             "Напиши одним сообщением, что уточнить или дополнить.",
             reply_markup=main_menu_keyboard(),
@@ -2026,7 +2043,7 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
     await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
     await state.set_state(FlowState.participant_contribute)
     await message.answer(
-        f"🧭 <b>Текущая поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
+        f"📂 <b>Поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
         f"{format_brief_for_participant(brief, event_number=event_number)}\n\n"
         "Напиши одним сообщением, что важно лично тебе.",
         reply_markup=main_menu_keyboard(),
@@ -2145,10 +2162,14 @@ async def role_callback_handler(callback: CallbackQuery, state: FSMContext) -> N
 
     if data == "role:organizer":
         await state.update_data(role="organizer")
-        await bootstrap_organizer_event(callback.message, state)
+        had_event = pick_best_organizer_event(callback.message.chat.id) is not None
+        event_code = await bootstrap_organizer_event(callback.message, state)
+        if had_event:
+            await resume_latest_trip(callback.message, state, from_user=callback.from_user)
+            return
+        event_number = (EVENTS.get(event_code) or {}).get("event_number")
         await callback.message.answer(
-            "Отлично. Раз ты создаёшь поездку — ты организатор.\n\n"
-            "Напиши вводные одним сообщением или нажми «✨ Создать поездку» в меню ниже.",
+            format_trip_created_organizer_message(event_number),
             reply_markup=main_menu_keyboard(),
         )
         return
@@ -2369,7 +2390,7 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
 async def cancel_handler(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "Ок, прервала текущий ввод. Можешь вернуться к поездке через «🧭 Текущая поездка».",
+        "Ок, прервала текущий ввод. Вернуться к поездке можно через «📂 Мои поездки».",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -2413,7 +2434,6 @@ async def main() -> None:
     dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
     dp.message.register(new_event_handler, F.text.func(is_create_event_text))
     dp.message.register(my_events_handler, F.text.func(is_my_events_text))
-    dp.message.register(capabilities_handler, F.text.func(is_capabilities_text))
     dp.message.register(help_handler, F.text.func(is_help_text))
     dp.message.register(text_fallback_handler, F.text)
 
