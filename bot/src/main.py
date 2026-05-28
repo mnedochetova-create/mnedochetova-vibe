@@ -25,6 +25,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import brief_parser
+import live_response
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
 
@@ -206,6 +207,48 @@ def merge_participant_into_brief(
 
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     return brief_parser.missing_brief_fields(brief)
+
+
+def parser_confidence_hint() -> float:
+    mode = brief_parser.get_last_parser_mode()
+    if mode == "llm+rules":
+        return 0.86
+    if mode == "llm_fallback":
+        return 0.68
+    return 0.72
+
+
+def build_live_prompt_context(
+    *,
+    role: str,
+    flow_step: str,
+    human_status: str,
+    allowed_next_action: str,
+    last_system_action: str,
+    brief: Dict[str, Any],
+    missing: List[str],
+    parser_result: Dict[str, Any],
+    conflicts: List[str],
+    user_message: str,
+) -> Dict[str, Any]:
+    return {
+        "role": role,
+        "flow_step": flow_step,
+        "human_status": human_status,
+        "allowed_next_action": allowed_next_action,
+        "last_system_action": last_system_action,
+        "brief_json": brief,
+        "missing_fields_json": missing,
+        "parser_result_json": parser_result,
+        "conflicts_json": conflicts,
+        "recent_messages_json": [{"role": "user", "text": user_message}],
+        "user_message": user_message,
+    }
+
+
+def live_text_or_fallback(context: Dict[str, Any], fallback_text: str) -> str:
+    result = live_response.generate_live_response(context, fallback_text)
+    return str(result.get("assistant_text") or fallback_text)
 
 
 def format_brief_unified(
@@ -1041,6 +1084,11 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         message.from_user.full_name if message.from_user else str(message.chat.id)
     )
     updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+    change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+    conflict_keys = []
+    for key in incoming.keys():
+        if key in base_brief and base_brief.get(key) != incoming.get(key):
+            conflict_keys.append(key)
     event["brief"] = updated_brief
 
     updates = event.setdefault("participant_updates", {})
@@ -1078,8 +1126,31 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         missing=missing,
         brief_html=brief_html,
     )
+    parser_result = live_response.build_parser_result(
+        saved=True,
+        confidence=parser_confidence_hint(),
+        added_fields=change_info["added_fields"],
+        updated_fields=change_info["updated_fields"],
+        conflicts=conflict_keys,
+    )
+    live_context = build_live_prompt_context(
+        role="participant",
+        flow_step="participant_contribute",
+        human_status="Получили пожелания участника",
+        allowed_next_action="confirm_brief | continue_flow",
+        last_system_action="participant_added_input",
+        brief=updated_brief,
+        missing=missing,
+        parser_result=parser_result,
+        conflicts=conflict_keys,
+        user_message=message.text or "",
+    )
+    intro_text = live_text_or_fallback(
+        live_context,
+        "Спасибо, добавила ваши вводные в бриф.",
+    )
     await message.answer(
-        "Спасибо, добавила ваши вводные в бриф.\n\n"
+        f"{intro_text}\n\n"
         f"{brief_html}\n\n"
         f"Проверьте, пожалуйста: всё верно?{missing_block}",
         reply_markup=participant_confirm_keyboard(),
@@ -1158,6 +1229,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
 
         incoming = extract_brief_from_text(text)
         brief = merge_brief(existing_brief, incoming)
+        change_info = live_response.detect_field_changes(existing_brief, incoming, brief)
 
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["organizer_dump"] = text
@@ -1183,20 +1255,46 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
             missing=missing,
             brief_html=summary_text,
         )
+        parser_result = live_response.build_parser_result(
+            saved=True,
+            confidence=parser_confidence_hint(),
+            added_fields=change_info["added_fields"],
+            updated_fields=change_info["updated_fields"],
+        )
+        live_context = build_live_prompt_context(
+            role="organizer",
+            flow_step="organizer_dump",
+            human_status="Ждём уточнение вводных" if missing else "Бриф собран",
+            allowed_next_action="ask_clarification | show_invite_link | continue_flow",
+            last_system_action="brief_updated" if not missing else "clarification_requested",
+            brief=brief,
+            missing=missing,
+            parser_result=parser_result,
+            conflicts=[],
+            user_message=text,
+        )
 
         if not missing:
+            intro_text = live_text_or_fallback(
+                live_context,
+                "Отлично, базовых данных достаточно. Переходим к подключению участников.",
+            )
             await message.answer(
                 f"{summary_text}\n\n"
-                "Отлично, базовых данных достаточно. Переходим к подключению участников.",
+                f"{intro_text}",
                 reply_markup=main_menu_keyboard(),
             )
             await send_next_step_after_brief(message, state)
             return
 
         missing_text = "\n".join(f"- {m}" for m in missing)
+        clarify_text = live_text_or_fallback(
+            live_context,
+            "🚨 <b>Уточните только это</b> (можно одним сообщением):",
+        )
         await message.answer(
             f"{summary_text}\n\n"
-            "🚨 <b>Уточните только это</b> (можно одним сообщением):\n"
+            f"{clarify_text}\n"
             f"{missing_text}",
             reply_markup=main_menu_keyboard(),
         )
@@ -1219,7 +1317,9 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
         brief = data.get("brief") or {}
 
         incoming = extract_brief_from_text(message.text or "")
+        previous_brief = dict(brief)
         brief = merge_brief(brief, incoming)
+        change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
 
         if event_code and event_code in EVENTS:
             EVENTS[event_code]["brief"] = brief
@@ -1242,19 +1342,45 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
             missing=missing,
             brief_html=summary_text,
         )
+        parser_result = live_response.build_parser_result(
+            saved=True,
+            confidence=parser_confidence_hint(),
+            added_fields=change_info["added_fields"],
+            updated_fields=change_info["updated_fields"],
+        )
+        live_context = build_live_prompt_context(
+            role="organizer",
+            flow_step="organizer_clarify",
+            human_status="Ждём уточнение вводных" if missing else "Бриф собран",
+            allowed_next_action="ask_clarification | show_invite_link | continue_flow",
+            last_system_action="brief_updated" if not missing else "clarification_requested",
+            brief=brief,
+            missing=missing,
+            parser_result=parser_result,
+            conflicts=[],
+            user_message=message.text or "",
+        )
         if not missing:
+            intro_text = live_text_or_fallback(
+                live_context,
+                "Отлично, спасибо! Данных достаточно. Переходим к подключению участников.",
+            )
             await message.answer(
                 f"{summary_text}\n\n"
-                "Отлично, спасибо! Данных достаточно. Переходим к подключению участников.",
+                f"{intro_text}",
                 reply_markup=main_menu_keyboard(),
             )
             await send_next_step_after_brief(message, state)
             return
 
         missing_text = "\n".join(f"- {m}" for m in missing)
+        clarify_text = live_text_or_fallback(
+            live_context,
+            "🚨 <b>Осталось уточнить:</b>",
+        )
         await message.answer(
             f"{summary_text}\n\n"
-            "🚨 <b>Осталось уточнить:</b>\n"
+            f"{clarify_text}\n"
             f"{missing_text}\n\n"
             "Можно одним сообщением.",
             reply_markup=main_menu_keyboard(),

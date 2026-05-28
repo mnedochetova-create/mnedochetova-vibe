@@ -38,6 +38,8 @@
    - при необходимости заполнить `LLM_API_KEY` (для следующих этапов)
    - чтобы включить LLM-парсинг брифа: `USE_LLM_BRIEF_PARSER=true`
    - при необходимости выбрать модель: `LLM_PARSER_MODEL=gpt-4o-mini`
+   - чтобы включить "живые" ответы в текущем сценарии: `USE_LLM_LIVE_RESPONSES=true`
+   - при необходимости выбрать модель живых ответов: `LLM_LIVE_MODEL=gpt-4o-mini`
 3. Запуск:
    - `python3 src/main.py`
 
@@ -53,6 +55,8 @@
 - `USE_LLM_BRIEF_PARSER` (`true/false`)
 - `LLM_API_KEY` (если включён LLM-парсер)
 - `LLM_PARSER_MODEL` (например, `gpt-4o-mini`)
+- `USE_LLM_LIVE_RESPONSES` (`true/false`)
+- `LLM_LIVE_MODEL` (например, `gpt-4o-mini`)
 
 Важно:
 
@@ -101,6 +105,15 @@
   - базовый rule-based парсер работает всегда;
   - при `USE_LLM_BRIEF_PARSER=true` бот дополнительно вызывает LLM для структурирования;
   - при ошибке сети/LLM бот автоматически остается на rule-based парсинге.
+
+## Живые ответы (LLM)
+
+- System prompt: `bot/prompts/live_response_system_prompt.md`
+- User template: `bot/prompts/live_response_user_prompt_template.md`
+- Логика:
+  - включается флагом `USE_LLM_LIVE_RESPONSES=true`;
+  - используется только для формулировки текста ответа (кнопки и шаги сценария остаются прежними);
+  - при ошибке сети/LLM или невалидном JSON бот автоматически откатывается к штатному тексту ответа.
 
 ## Проверка качества парсинга
 
