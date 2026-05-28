@@ -25,6 +25,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import brief_parser
+import brief_pipeline
 import live_response
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
@@ -1079,6 +1080,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     event = EVENTS[event_code]
     event_number = event.get("event_number")
     base_brief = event.get("brief") or {}
+    merger_conflicts: List[str] = []
     incoming = extract_brief_from_text(message.text or "")
     participant_name = data.get("participant_name") or (
         message.from_user.full_name if message.from_user else str(message.chat.id)
@@ -1089,6 +1091,31 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
     for key in incoming.keys():
         if key in base_brief and base_brief.get(key) != incoming.get(key):
             conflict_keys.append(key)
+    if brief_pipeline.structured_pipeline_enabled():
+        structured_participant = brief_pipeline.parse_participant_message(
+            message.text or "",
+            participant_name,
+        )
+        if structured_participant:
+            participant_inputs_structured = event.get("participant_inputs_structured") or []
+            participant_inputs_structured = brief_pipeline.upsert_participant_input(
+                participant_inputs_structured,
+                structured_participant,
+            )
+            event["participant_inputs_structured"] = participant_inputs_structured
+            merged_structured = brief_pipeline.merge_brief_inputs(
+                base_brief_json=event.get("base_brief_structured") or {},
+                participant_inputs_json=participant_inputs_structured,
+                new_input_json=structured_participant,
+                current_event_status=_event_status_info(event).get("key", "active"),
+            )
+            if merged_structured:
+                event["merged_brief_structured"] = merged_structured
+                merger_conflicts = [
+                    str(item.get("topic") or item.get("description") or "расхождение")
+                    for item in (merged_structured.get("conflicts") or [])
+                    if isinstance(item, dict)
+                ]
     event["brief"] = updated_brief
 
     updates = event.setdefault("participant_updates", {})
@@ -1131,7 +1158,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         confidence=parser_confidence_hint(),
         added_fields=change_info["added_fields"],
         updated_fields=change_info["updated_fields"],
-        conflicts=conflict_keys,
+        conflicts=(conflict_keys + merger_conflicts),
     )
     live_context = build_live_prompt_context(
         role="participant",
@@ -1142,7 +1169,7 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         brief=updated_brief,
         missing=missing,
         parser_result=parser_result,
-        conflicts=conflict_keys,
+        conflicts=(conflict_keys + merger_conflicts),
         user_message=message.text or "",
     )
     intro_text = live_text_or_fallback(
@@ -1230,8 +1257,26 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
         incoming = extract_brief_from_text(text)
         brief = merge_brief(existing_brief, incoming)
         change_info = live_response.detect_field_changes(existing_brief, incoming, brief)
+        merger_conflicts: List[str] = []
 
         if event_code and event_code in EVENTS:
+            if brief_pipeline.structured_pipeline_enabled():
+                structured_organizer = brief_pipeline.parse_organizer_message(text)
+                if structured_organizer:
+                    EVENTS[event_code]["base_brief_structured"] = structured_organizer
+                    merged_structured = brief_pipeline.merge_brief_inputs(
+                        base_brief_json=structured_organizer,
+                        participant_inputs_json=EVENTS[event_code].get("participant_inputs_structured") or [],
+                        new_input_json=structured_organizer,
+                        current_event_status=_event_status_info(EVENTS[event_code]).get("key", "active"),
+                    )
+                    if merged_structured:
+                        EVENTS[event_code]["merged_brief_structured"] = merged_structured
+                        merger_conflicts = [
+                            str(item.get("topic") or item.get("description") or "расхождение")
+                            for item in (merged_structured.get("conflicts") or [])
+                            if isinstance(item, dict)
+                        ]
             EVENTS[event_code]["organizer_dump"] = text
             EVENTS[event_code]["brief"] = brief
             touch_event(EVENTS[event_code])
@@ -1260,6 +1305,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
             confidence=parser_confidence_hint(),
             added_fields=change_info["added_fields"],
             updated_fields=change_info["updated_fields"],
+            conflicts=merger_conflicts,
         )
         live_context = build_live_prompt_context(
             role="organizer",
@@ -1270,7 +1316,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
             brief=brief,
             missing=missing,
             parser_result=parser_result,
-            conflicts=[],
+            conflicts=merger_conflicts,
             user_message=text,
         )
 
@@ -1320,8 +1366,26 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
         previous_brief = dict(brief)
         brief = merge_brief(brief, incoming)
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
+        merger_conflicts: List[str] = []
 
         if event_code and event_code in EVENTS:
+            if brief_pipeline.structured_pipeline_enabled():
+                structured_organizer = brief_pipeline.parse_organizer_message(message.text or "")
+                if structured_organizer:
+                    EVENTS[event_code]["base_brief_structured"] = structured_organizer
+                    merged_structured = brief_pipeline.merge_brief_inputs(
+                        base_brief_json=structured_organizer,
+                        participant_inputs_json=EVENTS[event_code].get("participant_inputs_structured") or [],
+                        new_input_json=structured_organizer,
+                        current_event_status=_event_status_info(EVENTS[event_code]).get("key", "active"),
+                    )
+                    if merged_structured:
+                        EVENTS[event_code]["merged_brief_structured"] = merged_structured
+                        merger_conflicts = [
+                            str(item.get("topic") or item.get("description") or "расхождение")
+                            for item in (merged_structured.get("conflicts") or [])
+                            if isinstance(item, dict)
+                        ]
             EVENTS[event_code]["brief"] = brief
             touch_event(EVENTS[event_code])
             save_events()
@@ -1347,6 +1411,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
             confidence=parser_confidence_hint(),
             added_fields=change_info["added_fields"],
             updated_fields=change_info["updated_fields"],
+            conflicts=merger_conflicts,
         )
         live_context = build_live_prompt_context(
             role="organizer",
@@ -1357,7 +1422,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
             brief=brief,
             missing=missing,
             parser_result=parser_result,
-            conflicts=[],
+            conflicts=merger_conflicts,
             user_message=message.text or "",
         )
         if not missing:

@@ -40,6 +40,8 @@
    - при необходимости выбрать модель: `LLM_PARSER_MODEL=gpt-4o-mini`
    - чтобы включить "живые" ответы в текущем сценарии: `USE_LLM_LIVE_RESPONSES=true`
    - при необходимости выбрать модель живых ответов: `LLM_LIVE_MODEL=gpt-4o-mini`
+   - чтобы включить pipeline parser/merger (organizer+participant+merge): `USE_STRUCTURED_BRIEF_PIPELINE=true`
+   - при необходимости выбрать модель structured pipeline: `LLM_BRIEF_STRUCTURED_MODEL=gpt-4o-mini`
 3. Запуск:
    - `python3 src/main.py`
 
@@ -57,6 +59,8 @@
 - `LLM_PARSER_MODEL` (например, `gpt-4o-mini`)
 - `USE_LLM_LIVE_RESPONSES` (`true/false`)
 - `LLM_LIVE_MODEL` (например, `gpt-4o-mini`)
+- `USE_STRUCTURED_BRIEF_PIPELINE` (`true/false`)
+- `LLM_BRIEF_STRUCTURED_MODEL` (например, `gpt-4o-mini`)
 
 Важно:
 
@@ -114,6 +118,18 @@
   - включается флагом `USE_LLM_LIVE_RESPONSES=true`;
   - используется только для формулировки текста ответа (кнопки и шаги сценария остаются прежними);
   - при ошибке сети/LLM или невалидном JSON бот автоматически откатывается к штатному тексту ответа.
+
+## Structured brief pipeline (LLM)
+
+- Organizer parser prompt: `bot/prompts/brief_parser_organizer_system_prompt.md`
+- Participant parser prompt: `bot/prompts/brief_parser_participant_system_prompt.md`
+- Merger prompt: `bot/prompts/brief_merger_system_prompt.md`
+- Логика:
+  - включается флагом `USE_STRUCTURED_BRIEF_PIPELINE=true`;
+  - organizer/participant parser извлекают данные отдельно;
+  - merger объединяет базовый бриф и личные вклады, подсвечивает расхождения;
+  - результаты сохраняются как структурированные поля события (`base_brief_structured`, `participant_inputs_structured`, `merged_brief_structured`);
+  - при сбое LLM текущий основной сценарий и legacy brief продолжают работать.
 
 ## Проверка качества парсинга
 
