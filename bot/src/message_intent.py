@@ -132,9 +132,11 @@ def classify_message_intent(
         return "brief_input"
 
     if flow_step in {"organizer_dump", "organizer_clarify", "participant_contribute"}:
-        if conv_score >= 1:
+        if conv_score >= 1 and brief_score == 0:
             return "conversation"
-        if len(normalized) > 25:
+        if brief_score >= 1:
+            return "brief_input"
+        if len(normalized) > 12:
             return "brief_input"
 
     if conv_score >= 1:
