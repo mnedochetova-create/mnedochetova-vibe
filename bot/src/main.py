@@ -359,6 +359,7 @@ async def resolve_organizer_event_and_brief(
     state: FSMContext,
 ) -> tuple[str, Dict[str, Any]]:
     """Всегда берём самый заполненный бриф организатора для чата (не пустой дубликат из FSM)."""
+    load_events()
     chat_id = message.chat.id
     code = await ensure_organizer_event_code(message, state)
     if not code:
@@ -372,9 +373,9 @@ async def resolve_organizer_event_and_brief(
             current_brief
         ):
             code = best_code
-        existing_brief = dict(EVENTS.get(code, {}).get("brief") or {})
+        existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
     else:
-        existing_brief = dict(EVENTS.get(code, {}).get("brief") or {})
+        existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
     await state.update_data(
         role="organizer",
         event_code=code,
@@ -683,8 +684,12 @@ async def _apply_organizer_brief_from_message(
     text = message.text or ""
     event_code, existing_brief = await resolve_organizer_event_and_brief(message, state)
 
-    incoming = extract_brief_from_text(text)
-    brief = merge_brief(existing_brief, incoming)
+    if flow_step == "organizer_clarify" and brief_parser.brief_completeness_score(existing_brief) >= 4:
+        incoming = extract_brief_from_text(text)
+        brief = brief_parser.merge_brief_clarify(existing_brief, incoming)
+    else:
+        incoming = extract_brief_from_text(text)
+        brief = merge_brief(existing_brief, incoming)
     _merge_organizer_structured(event_code or "", text)
 
     if event_code and event_code in EVENTS:
@@ -764,7 +769,10 @@ async def handle_organizer_conversation(
     change_info = {"added_fields": [], "updated_fields": []}
     if brief_updated:
         previous_brief = dict(brief)
-        brief = merge_brief(brief, incoming)
+        if brief_parser.brief_completeness_score(brief) >= 4:
+            brief = brief_parser.merge_brief_clarify(brief, incoming)
+        else:
+            brief = merge_brief(brief, incoming)
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
         merger_conflicts = _merge_organizer_structured(event_code or "", text)
         if event_code and event_code in EVENTS:

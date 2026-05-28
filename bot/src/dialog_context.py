@@ -136,4 +136,8 @@ def brief_insight_line(brief: Dict[str, Any]) -> str:
         parts.append(str(climate))
     if not parts:
         return ""
-    return "Похоже на поездку: " + ", ".join(parts[:4]) + "."
+    deduped: List[str] = []
+    for item in parts[:5]:
+        if item not in deduped:
+            deduped.append(item)
+    return "Похоже на поездку: " + ", ".join(deduped) + "."

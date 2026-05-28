@@ -425,7 +425,9 @@ def _combine_climate(existing: str, new: str) -> str:
         return new
     if not new or existing == new:
         return existing
-    if new in existing or existing in new:
+    if existing in new:
+        return new
+    if new in existing:
         return existing
     return f"{existing} и {new}"
 
@@ -560,4 +562,73 @@ def extract_brief_from_text(text: str) -> Dict[str, Any]:
         LAST_PARSER_MODE = "llm+rules"
     else:
         LAST_PARSER_MODE = "llm_fallback"
-    return merge_brief(llm_brief, rule_based)
+    # Сначала правила (факты из текста), LLM только дополняет — не затирает пустыми ключами.
+    return merge_brief(rule_based, llm_brief)
+
+
+def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Если brief в storage обнулился, восстановить из organizer_dump."""
+    brief = dict(event.get("brief") or {})
+    if brief_completeness_score(brief) >= 4:
+        return brief
+    dump_text = event.get("organizer_dump")
+    if isinstance(dump_text, str) and dump_text.strip():
+        from_dump = extract_brief_from_text(dump_text)
+        brief = merge_brief(from_dump, brief)
+    return brief
+
+
+_ORGANIZER_IMMUTABLE_IF_SET = frozenset(
+    {
+        "budget_rub_max",
+        "adults",
+        "kids_count",
+        "kid_age",
+        "months",
+        "date_range_raw",
+        "flight_hours_max",
+        "flight_hours_unrestricted",
+        "transfers_allowed",
+        "visa_required",
+        "visa_status",
+        "passports_status",
+        "documents_discussed",
+    }
+)
+
+
+def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Уточнение: дополняем бриф, не затираем уже зафиксированные поля."""
+    out = dict(base or {})
+    for k, v in (incoming or {}).items():
+        if v is None:
+            continue
+        if k == "context_raw":
+            if v:
+                out[k] = v
+            continue
+        if k in {"months", "visa_notes", "constraints_notes", "activity_preferences", "passports_notes"}:
+            if _is_empty_brief_value(v):
+                continue
+            out.setdefault(k, [])
+            for item in v:
+                if item not in out[k]:
+                    out[k].append(item)
+            continue
+        if k == "climate":
+            if _is_empty_brief_value(v):
+                continue
+            current = out.get("climate")
+            if current and str(current) != str(v):
+                out[k] = _combine_climate(str(current), str(v))
+            elif not _is_empty_brief_value(current):
+                out[k] = current
+            else:
+                out[k] = v
+            continue
+        if k in _ORGANIZER_IMMUTABLE_IF_SET and not _is_empty_brief_value(out.get(k)):
+            continue
+        if _is_empty_brief_value(v) and not _is_empty_brief_value(out.get(k)):
+            continue
+        out[k] = v
+    return out

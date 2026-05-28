@@ -30,6 +30,32 @@ def test_merge_brief_preserves_existing_when_incoming_sparse() -> None:
     assert "гор" in str(merged.get("climate", "")).lower() or "море" in str(merged.get("climate", "")).lower()
 
 
+def test_restore_brief_from_organizer_dump() -> None:
+    dump = "7 взрослых 1 ребенок конец августа бюджет до 1 млн греция море виза нужна"
+    event = {"brief": {}, "organizer_dump": dump}
+    restored = brief_parser.restore_organizer_brief_from_event(event)
+    assert restored.get("adults") == 7
+    assert restored.get("budget_rub_max") == 1_000_000
+
+
+def test_merge_brief_clarify_keeps_base() -> None:
+    base = {
+        "adults": 7,
+        "kids_count": 1,
+        "months": ["август"],
+        "budget_rub_max": 1_000_000,
+        "climate": "море/пляж",
+        "visa_required": True,
+    }
+    incoming = brief_parser.extract_brief_rule_based(
+        "хочу горы и пляж, виноградники"
+    )
+    merged = brief_parser.merge_brief_clarify(base, incoming)
+    assert merged.get("adults") == 7
+    assert merged.get("budget_rub_max") == 1_000_000
+    assert "гор" in str(merged.get("climate", "")).lower()
+
+
 def test_combined_sea_and_mountains_climate() -> None:
     parsed = brief_parser.extract_brief_rule_based(
         "часть времени на виноградниках в горах, часть на пляже"
