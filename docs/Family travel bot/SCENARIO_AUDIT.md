@@ -10,7 +10,8 @@
 | MVP_BOT_SPEC | MENU, PERSONA, PARSING, BRIEF_SHARING | OK (state machine обновлён ниже) |
 | USER_FLOWS | — | Были устаревшие «Мои события» / «Помощь» в меню — исправлено |
 | MENU_ARCHITECTURE | USER_FLOWS, MVP, BOT_PERSONA | OK |
-| PARSING_SPEC | — | Добавлен § live responses |
+| PARSING_SPEC | BRIEF_PARSING_ROADMAP | Канон `PARSER_MODE`, §6 без дубля |
+| BRIEF_PARSING_ROADMAP | PARSING_SPEC | Только чеклисты, без копии архитектуры |
 | bot/README | docs + env | Убран устаревший `/new` |
 | README (этот индекс) | все ключевые файлы | NEW |
 
@@ -29,9 +30,11 @@
 ### Чеклист Railway Variables
 
 ```
-USE_LLM_LIVE_RESPONSES=true   # или TRUE / yes / 1
-LLM_API_KEY=sk-...            # обязательно
-LLM_LIVE_MODEL=gpt-4o-mini    # опционально
+PARSER_MODE=role_llm
+LLM_API_KEY=sk-...
+LLM_BRIEF_STRUCTURED_MODEL=gpt-4o-mini   # опционально
+USE_LLM_LIVE_RESPONSES=true                # опционально
+LLM_LIVE_MODEL=gpt-4o-mini                 # опционально
 ```
 
 После деплоя в логах Railway при старте должна быть строка:
@@ -77,7 +80,7 @@ LLM_LIVE_MODEL=gpt-4o-mini    # опционально
 | 1 | **Две кнопки «✅ Подтвердить бриф»** — у участника (`participant:confirm`) и у организатора (`brief:confirm`) | Средняя | Переименовать участнику: «✅ Всё верно» (UX-апрув) |
 | 2 | **До 4 inline-кнопок** на экране приглашения и финала (правило «макс. 3» в MENU_ARCHITECTURE) | Низкая | Зафиксировать исключение для value-экранов или схлопнуть ряды |
 | 3 | **После `brief:edit`** статус `organizer_brief_confirmed_at` не сбрасывается | Средняя | При дополнении сбрасывать подтверждение или блокировать edit |
-| 4 | **Нет inline «расхождения»** для организатора при конфликтах merger | Средняя | Backlog: `brief:conflicts` |
+| 4 | Расхождения merger — блок в карточке брифа; отдельная inline `brief:conflicts` не сделана | Низкая | Backlog при необходимости |
 | 5 | **Карточки «Мои поездки»** — по `#номер`, не по смыслу поездки | Низкая | Backlog: заголовок из брифа |
 | 6 | **`/cancel`** сбрасывает FSM, но не объясняет, на каком шаге был пользователь | Низкая | Доп. строка в ответе cancel |
 | 7 | **MVP state machine** в спеке не включала `brief_confirmed` / sharing | Док | Обновлено в MVP_BOT_SPEC §3 |

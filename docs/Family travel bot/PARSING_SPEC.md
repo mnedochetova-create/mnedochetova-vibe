@@ -6,19 +6,26 @@
 
 ## 0) Режимы парсинга (актуально)
 
-- **Legacy brief parsing (default):**
-  - используется текущая плоская схема полей (см. раздел 1);
-  - rule-based парсер + опциональное LLM-обогащение;
-  - включение LLM-слоя: `USE_LLM_BRIEF_PARSER=true`.
-- **Structured pipeline (feature flag):**
-  - `organizer parser` -> `participant parser` -> `brief merger/conflict detector`;
-  - включение: `USE_STRUCTURED_BRIEF_PIPELINE=true`;
-  - промпты:
-    - `bot/prompts/brief_parser_organizer_system_prompt.md`
-    - `bot/prompts/brief_parser_participant_system_prompt.md`
-    - `bot/prompts/brief_merger_system_prompt.md`
-- При сбое LLM основной сценарий остается работоспособным (fallback на rule-based контур).
-- Rule-based (всегда): страны (Греция, Турция, …), «в конце августа», «климат в &lt;стране&gt;» → направление + climate.
+### 0.0 Целевая архитектура (вариант B, код)
+
+Один пользовательский путь: **сообщение → rules → (опц.) LLM по роли → плоский `brief` → карточка в чате**.
+
+| `PARSER_MODE` | Поведение |
+|---------------|-----------|
+| `rules` (default) | Только rule-based |
+| `role_llm` | Rules + organizer/participant LLM → `brief_flat_mapper` → flat |
+
+Переменная: `PARSER_MODE` на Railway. Алиас: `USE_STRUCTURED_BRIEF_PIPELINE=true` → `role_llm` (если `PARSER_MODE` не задан).
+
+**Merger** (`brief_merger_system_prompt.md`) вызывается **только после вклада участника**. Результат: `group_conflicts` в карточке брифа.
+
+Код: `parser_mode.py`, `brief_flat_mapper.py`, `brief_parser.parse_message_to_brief()`.  
+Промпты (3): см. `bot/prompts/README.md`.
+
+### 0.0.1 Детали
+
+- При сбое LLM основной сценарий остаётся работоспособным (fallback на rules).
+- Rule-based (всегда): страны, «в конце августа», «климат в стране» → направление + climate.
 
 ### 0.1 Live responses (формулировки, не парсинг)
 
@@ -117,28 +124,20 @@
 4. Обновляем правила/промпт/валидацию.
 5. Повторяем до достижения целевых метрик.
 
-## 6) Structured pipeline: ответственность слоев
+## 6) LLM-слои при `PARSER_MODE=role_llm`
 
-### 6.1 Organizer parser
-- Извлекает только базовую рамку поездки от организатора.
-- Не добавляет participant-specific решения.
-- Не определяет конфликты.
+Индекс промптов: `bot/prompts/README.md`.
 
-### 6.2 Participant parser
-- Извлекает только личный вклад участника.
-- Не перезаписывает базовую рамку организатора.
-- Фиксирует неясные фразы в `unclear_items`, не превращая их в факты.
+| Слой | Промпт | Когда |
+|------|--------|--------|
+| Organizer parser | `brief_parser_organizer_system_prompt.md` | Каждое сообщение организатора с вводными |
+| Participant parser | `brief_parser_participant_system_prompt.md` | Вклад участника |
+| Merger | `brief_merger_system_prompt.md` | **Только** после вклада участника |
 
-### 6.3 Brief merger / conflict detector
-- Объединяет уже структурированные JSON-входы.
-- Разделяет:
-  - `harmless_addition`,
-  - `preference_difference`,
-  - `hard_conflict`,
-  - `unclear`.
-- Формирует:
-  - единый `merged_brief`,
-  - `participant_summary`,
-  - `open_questions`,
-  - `next_best_action`,
-  - рекомендацию статуса события.
+Merger не парсит свободный текст. Типы расхождений: `preference_difference`, `hard_conflict`, `harmless_addition`, `unclear`. В чате организатору — блок `group_conflicts` в карточке брифа.
+
+Доп. поля события (аудит, подбор): `base_brief_structured`, `participant_inputs_structured`, `merged_brief_structured`.
+
+## 7) Задел под подбор поездок (следующий этап)
+
+Поверх плоского `brief` планируется слой recommendation-ready: нормализованное направление, hard vs soft constraints, provenance/confidence, типы конфликтов из merger. `context_raw` сохранять всегда. Детали — в roadmap фаза D (`BRIEF_PARSING_ROADMAP.md`).

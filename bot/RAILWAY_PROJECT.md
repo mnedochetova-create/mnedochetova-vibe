@@ -20,7 +20,7 @@
 
 ## Что нужно вам в Railway (Variables)
 
-Минимум для бота: `BOT_TOKEN`. Опционально: `USE_LLM_BRIEF_PARSER`, `LLM_API_KEY`, `LLM_PARSER_MODEL` — см. `bot/README.md`.
+Минимум для бота: `BOT_TOKEN`. Парсинг: `PARSER_MODE=role_llm`, `LLM_API_KEY` — см. `bot/README.md`, `PARSING_SPEC.md`.
 
 ## GitHub Actions → Railway
 

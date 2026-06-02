@@ -80,8 +80,7 @@
 - Парсер учитывает длительность поездки (например, 5-7 дней), а также гибкую логику перелета: лимит по часам или допустимость пересадок.
 - Вклад участника не перезаписывает уже заполненные базовые поля организатора (например, бюджет события).
 - При потере FSM-состояния бот восстанавливает сценарий по данным события из хранилища.
-- Опциональный structured pipeline разделяет обработку на 3 слоя: organizer parser, participant parser, merger/conflict detector.
-- При включенном structured pipeline сохраняются дополнительные структурированные поля события: `base_brief_structured`, `participant_inputs_structured`, `merged_brief_structured`.
+- Парсинг: `PARSER_MODE` (`rules` | `role_llm`) — см. `PARSING_SPEC.md`; на проде `role_llm`.
 
 ### 4.3 Что зарезервировано на следующий этап
 - Генерация рекомендаций (2-3 направления с объяснением).
@@ -95,12 +94,7 @@
 
 ### 5.0 Режимы обработки брифа
 
-- **Legacy mode (по умолчанию):** rule-based/LLM parse в текущую плоскую схему брифа.
-- **Structured pipeline mode (feature flag):**
-  - organizer parser извлекает базовый структурированный бриф;
-  - participant parser извлекает персональный вклад отдельно;
-  - merger объединяет данные и подсвечивает потенциальные расхождения.
-- Включение structured pipeline: `USE_STRUCTURED_BRIEF_PIPELINE=true`.
+Единая спека: **`PARSING_SPEC.md`** (`PARSER_MODE`, промпты, merger, поля). Кратко: rules всегда → при `role_llm` LLM по роли → плоский бриф; merger после вклада участника.
 
 ### 5.1 Обязательные поля организатора (8)
 - Бюджет.
@@ -269,7 +263,7 @@
 - **PARSED BRIEF** — тот же HTML, что видит пользователь (`format_brief_update_message` / `format_brief_for_participant`).
 - **MISSING AFTER PARSE** — список из `missing_brief_fields`.
 - **MERGED EVENT BRIEF** — JSON snapshot без `context_raw`.
-- **parser:** `rules_only` | `llm+rules` | `llm_fallback`.
+- **parser:** `rules_only` | `role_llm+rules` | `role_llm_fallback`.
 
 ### Формат 2 — Session Summary (конец сессии)
 

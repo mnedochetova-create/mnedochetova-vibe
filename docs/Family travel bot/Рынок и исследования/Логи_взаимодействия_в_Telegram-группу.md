@@ -32,11 +32,7 @@
 | MISSING AFTER PARSE | Список полей из `missing_brief_fields` |
 | MERGED EVENT BRIEF | JSON snapshot объединённого брифа (без `context_raw`) |
 
-**Режим парсера (`parser`):**
-
-- `rules_only` — только rule-based парсер;
-- `llm+rules` — LLM + правила (`USE_LLM_BRIEF_PARSER=true`);
-- `llm_fallback` — LLM недоступен, откат на rules.
+**Режим парсера (`parser`):** `rules_only` | `role_llm+rules` | `role_llm_fallback` — см. `PARSER_MODE` в `PARSING_SPEC.md`.
 
 Длинные отчёты режутся на части (лимит Telegram ~4000 символов на сообщение).
 

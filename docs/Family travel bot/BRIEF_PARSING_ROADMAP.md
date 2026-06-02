@@ -1,139 +1,63 @@
 # Roadmap: парсинг и бриф (killer feature)
 
-**Статус:** зафиксировано для сессии правок (2026-05-29).  
-**Связанные документы:** `PARSING_SPEC.md`, `PRODUCT_CARD.md`, `MVP_BOT_SPEC.md`, `SCENARIO_AUDIT.md`.
+**Статус:** вариант B в коде (`PARSER_MODE`, `brief_flat_mapper`, merger только для участников).  
+**Канон по режимам и полям:** [`PARSING_SPEC.md`](PARSING_SPEC.md) — не дублировать здесь.
 
-## Зачем это приоритет
+## Цель
 
-- **Killer feature MVP:** групповой сбор и подтверждение единого брифа (организатор + участники) — см. `PRODUCT_CARD.md` §3.
-- **Wow-эффект** возникает в первые 30–60 секунд после первого сообщения с вводными: пользователь должен почувствовать «бот понял меня лучше, чем я ожидала».
-- **Следующий продуктовый этап:** те же структурированные данные пойдут в **подбор направлений и предложений** — бриф должен быть пригоден для рекомендаций, не только для отображения в чате.
+- Wow в первые 30–60 с после вводных: точный бриф без додумывания.
+- Данные пригодны для этапа **подбора поездок** (см. § «Мост к подбору» в `PARSING_SPEC` или отдельный черновик позже).
 
-Онбординг и меню (Start flow v2) закрыты; фокус смещается на **качество извлечения + карточку брифа + групповые расхождения**.
+## Критерии успеха (кратко)
 
----
+1. Понял с первого раза (P1-поля из `PARSING_SPEC` §3).
+2. Умные уточнения (1–2 пункта, не анкета).
+3. Карточка брифа сканируется за ~5 с.
+4. Расхождения группы видны в карточке (`group_conflicts`).
+5. Уточнения не затирают бриф (`merge_brief_clarify`, `organizer_dump`).
 
-## Что считается успехом (для пользователя)
+Live LLM (`USE_LLM_LIVE_RESPONSES`) — только intro; killer — парсер + HTML-бриф (`LIVE_RESPONSE.md`).
 
-| # | Критерий | Пояснение |
-|---|----------|-----------|
-| 1 | Понял с первого раза | Из одного сообщения видны даты, бюджет, состав, перелёт, направление/климат; нет выдуманных полей |
-| 2 | Умные уточнения | 1–2 вопроса по реальным белым пятнам (P1 в `PARSING_SPEC.md`), не анкета |
-| 3 | Карточка брифа | Сканируется за ~5 с: факты / стиль / ограничения / вклад участников (`format_brief_unified` в `bot/src/main.py`) |
-| 4 | Группа | После участников — явные расхождения («море vs горы»), а не каша в свободных заметках |
-| 5 | Доверие | Уточнения и merge не затирают уже зафиксированное (см. недавние фиксы `merge_brief_clarify`, restore из `organizer_dump`) |
+## Риски (актуальные)
 
-**Не путать с wow:** `USE_LLM_LIVE_RESPONSES` меняет только короткий intro; killer — **парсер + HTML-бриф** (`SCENARIO_AUDIT.md` §2).
+- [ ] Мало кейсов в `brief_parsing_golden.jsonl`.
+- [ ] Направления в `activity_preferences` — нужна нормализация для подбора.
+- [ ] `party_preferences` — слабое покрытие rule-based.
+- [ ] Метрики wow не зафиксированы числом.
 
----
-
-## Текущая архитектура (кратко)
-
-| Слой | Включение | Роль |
-|------|-----------|------|
-| Rule-based | всегда | Стабильные факты: бюджет, месяцы, перелёт, страны, виза |
-| LLM brief parser | `USE_LLM_BRIEF_PARSER` + `LLM_API_KEY` | Дополняет; merge: rules first (`extract_brief_from_text`) |
-| Structured pipeline | `USE_STRUCTURED_BRIEF_PIPELINE` | Organizer → participant → merger/conflict detector |
-| Live responses | `USE_LLM_LIVE_RESPONSES` | Тон intro, не парсинг |
-
-Каноническая схема полей: `PARSING_SPEC.md` §1.  
-Golden-регрессия: `bot/tests/fixtures/brief_parsing_golden.jsonl` (~13 кейсов на момент фиксации).
-
----
-
-## Риски и пробелы (на завтра)
-
-1. **Мало эталонных кейсов** — golden не покрывает типичные формулировки РФ/СНГ.
-2. **Направления** — часто попадают в `activity_preferences` строкой «предпочтение по направлению: …»; для подбора нужна нормализация.
-3. **`party_preferences`** — слабое место для семейных/ролевых формулировок.
-4. **Structured pipeline** — в коде есть; на проде часто выключен; конфликты merger слабо видны в UI (`SCENARIO_AUDIT.md` §4.4 — backlog `brief:conflicts`).
-5. **Нет явных метрик wow** — в спеке есть no-hallucination/recall, нет порога «достаточно для приглашения участников».
-
----
-
-## Мост к подбору поездок (не менять UX завтра, но держать в голове)
-
-Поверх плоского брифа понадобится слой **recommendation-ready** (отдельная спека или § в `PARSING_SPEC`):
-
-- **Направление** — страна/регион/кластер (не только строка в preferences).
-- **Hard vs soft** — бюджет, виза, перелёт = hard; «хотелось бы Санторини» = soft.
-- **Provenance** — источник поля (организатор / участник / уточнение), при необходимости confidence.
-- **Конфликты** — типы из merger: `hard_conflict`, `preference_difference`, `harmless_addition`, `unclear`.
-- **`context_raw`** — всегда сохранять для разбора и дообучения.
-
----
-
-## План работ (порядок на сессию)
+## План работ
 
 ### Фаза A — Диагностика
 
-- [ ] Собрать 3–5 **реальных** вводных (организатор + при возможности участник): удачные и провальные.
-- [ ] Прогон через текущий парсер → таблица: извлекли / потеряли / додумали.
-- [ ] Зафиксировать env на Railway: `USE_LLM_BRIEF_PARSER`, `USE_STRUCTURED_BRIEF_PIPELINE`, `LLM_API_KEY`.
+- [ ] 3–5 реальных вводных (организатор + участник).
+- [ ] Таблица: извлекли / потеряли / додумали.
+- [ ] Railway: `PARSER_MODE=role_llm`, `LLM_API_KEY`.
 
 ### Фаза B — Качество извлечения
 
-- [ ] Расширить `brief_parsing_golden.jsonl` кейсами из диагностики.
-- [ ] Подтянуть `brief_parser.py` (rules) и промпты:
-  - `bot/prompts/brief_parser_organizer_system_prompt.md`
-  - `bot/prompts/brief_parser_participant_system_prompt.md`
-  - `bot/prompts/brief_merger_system_prompt.md`
-- [ ] Целевые метрики по P1-полям (`PARSING_SPEC.md` §3): бюджет, состав, даты, перелёт, визы/документы, климат/тип.
+- [ ] Расширить golden.
+- [ ] Правки `brief_parser.py` (rules) и промптов organizer/participant.
+- [ ] `pytest bot/tests/test_brief_parsing.py`.
 
-### Фаза C — Wow в чате (UX — только с апрувом)
+### Фаза C — Wow в чате (UX-апрув)
 
-- [ ] Карточка брифа: что улучшить в `format_brief_unified` (группировка, направления, party).
-- [ ] Опционально: блок «что поняла из твоего сообщения» перед карточкой.
-- [ ] Расхождения участников — отдельный блок для организатора (связь с merger).
-- [ ] Любые новые/изменённые пользовательские тексты — согласование по `ux-ui-approval`.
+- [ ] `format_brief_unified` — направления, party.
+- [ ] При необходимости блок «что поняла» перед карточкой.
 
-### Фаза D — Задел под рекомендации
+### Фаза D — Подбор
 
-- [ ] Черновик `RECOMMENDATION_BRIEF_SCHEMA.md` (или § в `PARSING_SPEC`): обязательные поля для MVP подбора.
-- [ ] Без смены кнопок и шагов сценария.
+- [ ] `RECOMMENDATION_BRIEF_SCHEMA.md` или § в `PARSING_SPEC`.
 
----
+## Код (точки входа)
 
-## Варианты старта завтра (выбрать одно или комбо)
+| Модуль | Назначение |
+|--------|------------|
+| `parser_mode.py` | `PARSER_MODE` |
+| `brief_parser.py` | rules, `parse_message_to_brief()` |
+| `brief_flat_mapper.py` | structured → flat |
+| `brief_pipeline.py` | LLM organizer/participant/merger |
+| `main.py` | handlers, `format_brief_unified`, `run_group_merger_for_event` |
 
-| Вариант | Действие | Эффект |
-|---------|----------|--------|
-| **1** | Разбор реальных сообщений пользователя | Быстрый wow-фидбек |
-| **2** | Golden + pytest до правок кода | Регрессия не откатится |
-| **3** | Спека полей для подбора | Страховка под следующий этап |
-| **4** | Structured pipeline на staging | Проверить merger end-to-end |
+## Не ломать
 
-**Рекомендуемый комбо:** **1 + 2** (диагностика → эталоны → правки).
-
----
-
-## Ключевые файлы в репозитории
-
-| Область | Путь |
-|---------|------|
-| Парсинг (legacy) | `bot/src/brief_parser.py` |
-| Structured pipeline | `bot/src/brief_pipeline.py` |
-| Handlers, карточка брифа | `bot/src/main.py` (`extract_brief_from_text`, `format_brief_unified`, `missing_brief_fields`) |
-| Тесты | `bot/tests/test_brief_parsing.py`, `bot/tests/fixtures/brief_parsing_golden.jsonl` |
-| Спека парсинга | `docs/Family travel bot/PARSING_SPEC.md` |
-
----
-
-## Контекст недавних фиксов (не ломать)
-
-- `merge_brief_clarify`, `restore_organizer_brief_from_event`, rules-first merge с LLM.
-- Выбор лучшего события организатора, сохранение `organizer_dump`.
-- Коммиты: `44ccd82`, `7c66683` (clarify/merge/climate).
-
----
-
-## Открытые вопросы на завтра
-
-1. Какие реальные тексты вводных принести в сессию (организатор / участник)?
-2. Включать ли на staging `USE_STRUCTURED_BRIEF_PIPELINE=true`?
-3. Порог «бриф достаточен» — по `missing_brief_fields` как сейчас или ужесточить P1?
-4. Нужен ли отдельный блок «что поняла» в UX или достаточно улучшить карточку?
-
----
-
-*Документ создан по итогам обсуждения 2026-05-28. Обновлять по мере выполнения фаз.*
+`merge_brief_clarify`, restore из `organizer_dump`, rules-first merge, `pick_best_organizer_event`.

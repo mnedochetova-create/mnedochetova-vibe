@@ -24,8 +24,8 @@
 | Документ | Назначение |
 |----------|------------|
 | [MVP_BOT_SPEC.md](MVP_BOT_SPEC.md) | Спека бота, state machine, фичефлаги |
-| [PARSING_SPEC.md](PARSING_SPEC.md) | Парсинг брифа |
-| [BRIEF_PARSING_ROADMAP.md](BRIEF_PARSING_ROADMAP.md) | **План работ:** killer feature, wow, фазы A–D (сессия правок) |
+| [PARSING_SPEC.md](PARSING_SPEC.md) | **Канон:** парсинг, `PARSER_MODE`, поля, LLM-слои |
+| [BRIEF_PARSING_ROADMAP.md](BRIEF_PARSING_ROADMAP.md) | План работ по качеству парсера (чеклисты) |
 | [LIVE_RESPONSE.md](LIVE_RESPONSE.md) | Живые формулировки (system + user prompt) |
 | [../bot/README.md](../bot/README.md) | Запуск, env, деплой Railway |
 
@@ -36,7 +36,8 @@
 
 ## Код (ключевые модули)
 
-- `bot/src/main.py` — сценарии, кнопки, handlers
-- `bot/src/live_response.py` — живые формулировки (LLM)
-- `bot/src/brief_parser.py` — парсинг брифа
-- `bot/src/brief_pipeline.py` — structured pipeline (опционально)
+- `bot/src/main.py` — сценарии, handlers, карточка брифа
+- `bot/src/brief_parser.py` — rules + `parse_message_to_brief()`
+- `bot/src/parser_mode.py`, `brief_flat_mapper.py`, `brief_pipeline.py` — `PARSER_MODE`, mapper, LLM
+- `bot/src/live_response.py` — живые формулировки (отдельно от парсинга)
+- `bot/prompts/README.md` — какой промпт когда

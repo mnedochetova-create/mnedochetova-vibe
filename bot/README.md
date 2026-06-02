@@ -41,12 +41,10 @@
    - `cp .env.example .env`
    - заполнить `BOT_TOKEN`
    - при необходимости заполнить `LLM_API_KEY` (для следующих этапов)
-   - чтобы включить LLM-парсинг брифа (рекомендуется вместе с `LLM_API_KEY`): `USE_LLM_BRIEF_PARSER=true`
-   - при необходимости выбрать модель: `LLM_PARSER_MODEL=gpt-4o-mini`
-   - чтобы включить "живые" ответы в текущем сценарии: `USE_LLM_LIVE_RESPONSES=true`
-   - при необходимости выбрать модель живых ответов: `LLM_LIVE_MODEL=gpt-4o-mini`
-   - чтобы включить pipeline parser/merger (organizer+participant+merge): `USE_STRUCTURED_BRIEF_PIPELINE=true`
-   - при необходимости выбрать модель structured pipeline: `LLM_BRIEF_STRUCTURED_MODEL=gpt-4o-mini`
+   - парсинг: `PARSER_MODE=role_llm` + `LLM_API_KEY` (3 промпта: organizer / participant / merger)
+   - без LLM: `PARSER_MODE=rules`
+   - модель парсера: `LLM_BRIEF_STRUCTURED_MODEL` (по умолчанию `gpt-4o-mini`)
+   - «живые» ответы: `USE_LLM_LIVE_RESPONSES=true`, `LLM_LIVE_MODEL=gpt-4o-mini`
 3. Запуск:
    - `python3 src/main.py`
 
@@ -59,13 +57,11 @@
 ### Переменные в Railway (Variables)
 
 - `BOT_TOKEN` (обязательно)
-- `USE_LLM_BRIEF_PARSER` (`true/false`)
-- `LLM_API_KEY` (если включён LLM-парсер)
-- `LLM_PARSER_MODEL` (например, `gpt-4o-mini`)
+- `PARSER_MODE` — `rules` | `role_llm` (рекомендуется для прод)
+- `LLM_API_KEY` (для `role_llm`)
+- `LLM_BRIEF_STRUCTURED_MODEL` (опционально)
 - `USE_LLM_LIVE_RESPONSES` (`true/false`)
 - `LLM_LIVE_MODEL` (например, `gpt-4o-mini`)
-- `USE_STRUCTURED_BRIEF_PIPELINE` (`true/false`)
-- `LLM_BRIEF_STRUCTURED_MODEL` (например, `gpt-4o-mini`)
 
 Важно:
 
@@ -109,14 +105,9 @@
 
 Документация UX: `docs/Family travel bot/README.md`, аудит сценариев: `SCENARIO_AUDIT.md`.
 
-## Промпт парсинга брифа
+## Парсинг брифа
 
-- Файл prompt: `bot/prompts/brief_parser_system_prompt.md`
-- Спецификация правил парсинга и белых пятен: `docs/Family travel bot/PARSING_SPEC.md`
-- Логика:
-  - базовый rule-based парсер работает всегда;
-  - при `USE_LLM_BRIEF_PARSER=true` бот дополнительно вызывает LLM для структурирования;
-  - при ошибке сети/LLM бот автоматически остается на rule-based парсинге.
+См. **`docs/Family travel bot/PARSING_SPEC.md`** (канон) и **`bot/prompts/README.md`** (индекс промптов). План улучшений: `BRIEF_PARSING_ROADMAP.md`.
 
 ## Живые ответы (LLM)
 
@@ -127,18 +118,6 @@
   - меняется только **короткий intro** при парсинге вводных (не весь чат и не HTML-бриф);
   - при старте в логах: `Runtime flags: live_responses=True ... llm_api_key=set`;
   - при ошибке сети/LLM — fallback на штатный текст.
-
-## Structured brief pipeline (LLM)
-
-- Organizer parser prompt: `bot/prompts/brief_parser_organizer_system_prompt.md`
-- Participant parser prompt: `bot/prompts/brief_parser_participant_system_prompt.md`
-- Merger prompt: `bot/prompts/brief_merger_system_prompt.md`
-- Логика:
-  - включается флагом `USE_STRUCTURED_BRIEF_PIPELINE=true`;
-  - organizer/participant parser извлекают данные отдельно;
-  - merger объединяет базовый бриф и личные вклады, подсвечивает расхождения;
-  - результаты сохраняются как структурированные поля события (`base_brief_structured`, `participant_inputs_structured`, `merged_brief_structured`);
-  - при сбое LLM текущий основной сценарий и legacy brief продолжают работать.
 
 ## Проверка качества парсинга
 

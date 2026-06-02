@@ -25,7 +25,7 @@
 
 Примечание по реализации:
 - Тексты ответов могут формироваться через live LLM-слой (контекстный тон и формулировки) без изменения кнопок и шагов.
-- При включенном structured pipeline данные проходят через organizer parser -> participant parser -> merger/conflict detector.
+- При `PARSER_MODE=role_llm` — organizer/participant parser и merger (см. `PARSING_SPEC.md`).
 
 ## 2) Ветки входа (по вашей схеме)
 

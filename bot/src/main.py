@@ -25,9 +25,11 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+import brief_flat_mapper
 import brief_parser
 import brief_pipeline
 import env_util
+from parser_mode import get_parser_mode, llm_available
 import dialog_context
 import live_response
 import message_intent
@@ -79,14 +81,6 @@ def next_event_number() -> int:
 
 def touch_event(event: Dict[str, Any]) -> None:
     event["updated_at"] = now_ts()
-
-
-def get_brief_parser_prompt() -> str:
-    return brief_parser.get_brief_parser_prompt()
-
-
-def parse_brief_with_llm(text: str) -> Dict[str, Any]:
-    return brief_parser.parse_brief_with_llm(text)
 
 
 def load_events() -> None:
@@ -496,8 +490,46 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     return brief_parser.extract_brief_rule_based(text)
 
 
-def extract_brief_from_text(text: str) -> Dict[str, Any]:
-    return brief_parser.extract_brief_from_text(text)
+def extract_brief_from_text(
+    text: str,
+    *,
+    role: str = "organizer",
+    participant_name: str = "",
+) -> Dict[str, Any]:
+    return brief_parser.extract_brief_from_text(
+        text, role=role, participant_name=participant_name
+    )
+
+
+def parse_message_to_brief(
+    text: str,
+    *,
+    role: str = "organizer",
+    participant_name: str = "",
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    return brief_parser.parse_message_to_brief(
+        text, role=role, participant_name=participant_name
+    )
+
+
+def run_group_merger_for_event(event: Dict[str, Any]) -> List[str]:
+    """Merger только для группового брифа (после вклада участника)."""
+    participants = event.get("participant_inputs_structured") or []
+    base = event.get("base_brief_structured") or {}
+    if not participants:
+        return list(event.get("group_conflicts") or [])
+
+    merged = brief_pipeline.merge_brief_inputs(
+        base_brief_json=base,
+        participant_inputs_json=participants,
+        new_input_json=participants[-1],
+        current_event_status=_event_status_info(event).get("key", "active"),
+    )
+    if merged:
+        event["merged_brief_structured"] = merged
+    conflicts = brief_flat_mapper.conflicts_from_merger(merged or {})
+    event["group_conflicts"] = conflicts
+    return conflicts
 
 
 async def emit_parse_log(
@@ -544,9 +576,9 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
 
 def parser_confidence_hint() -> float:
     mode = brief_parser.get_last_parser_mode()
-    if mode == "llm+rules":
+    if mode == "role_llm+rules":
         return 0.86
-    if mode == "llm_fallback":
+    if mode == "role_llm_fallback":
         return 0.68
     return 0.72
 
@@ -648,32 +680,6 @@ MIXED_FALLBACK_ORGANIZER = (
 )
 
 
-def _merge_organizer_structured(event_code: str, text: str) -> List[str]:
-    if not event_code or event_code not in EVENTS:
-        return []
-    if not brief_pipeline.structured_pipeline_enabled():
-        return []
-    structured_organizer = brief_pipeline.parse_organizer_message(text)
-    if not structured_organizer:
-        return []
-    event = EVENTS[event_code]
-    event["base_brief_structured"] = structured_organizer
-    merged_structured = brief_pipeline.merge_brief_inputs(
-        base_brief_json=structured_organizer,
-        participant_inputs_json=event.get("participant_inputs_structured") or [],
-        new_input_json=structured_organizer,
-        current_event_status=_event_status_info(event).get("key", "active"),
-    )
-    if not merged_structured:
-        return []
-    event["merged_brief_structured"] = merged_structured
-    return [
-        str(item.get("topic") or item.get("description") or "расхождение")
-        for item in (merged_structured.get("conflicts") or [])
-        if isinstance(item, dict)
-    ]
-
-
 def build_organizer_brief_reply_parts(
     brief: Dict[str, Any],
     *,
@@ -723,14 +729,15 @@ async def _apply_organizer_brief_from_message(
     event_code, existing_brief = await resolve_organizer_event_and_brief(message, state)
 
     if flow_step == "organizer_clarify" and brief_parser.brief_completeness_score(existing_brief) >= 4:
-        incoming = extract_brief_from_text(text)
+        incoming, structured = parse_message_to_brief(text, role="organizer")
         brief = brief_parser.merge_brief_clarify(existing_brief, incoming)
     else:
-        incoming = extract_brief_from_text(text)
+        incoming, structured = parse_message_to_brief(text, role="organizer")
         brief = merge_brief(existing_brief, incoming)
-    _merge_organizer_structured(event_code or "", text)
 
     if event_code and event_code in EVENTS:
+        if structured:
+            EVENTS[event_code]["base_brief_structured"] = structured
         if flow_step == "organizer_dump":
             EVENTS[event_code]["organizer_dump"] = text
         EVENTS[event_code]["brief"] = brief
@@ -801,9 +808,9 @@ async def handle_organizer_conversation(
     history = await save_dialog_turn(state, user_text=text)
     event_code, brief = await resolve_organizer_event_and_brief(message, state)
 
-    incoming = extract_brief_from_text(text)
+    incoming, structured = parse_message_to_brief(text, role="organizer")
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
-    merger_conflicts: List[str] = []
+    merger_conflicts: List[str] = list((brief or {}).get("group_conflicts") or [])
     change_info = {"added_fields": [], "updated_fields": []}
     if brief_updated:
         previous_brief = dict(brief)
@@ -812,8 +819,9 @@ async def handle_organizer_conversation(
         else:
             brief = merge_brief(brief, incoming)
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
-        merger_conflicts = _merge_organizer_structured(event_code or "", text)
         if event_code and event_code in EVENTS:
+            if structured:
+                EVENTS[event_code]["base_brief_structured"] = structured
             EVENTS[event_code]["brief"] = brief
             touch_event(EVENTS[event_code])
             save_events()
@@ -949,42 +957,26 @@ async def handle_participant_brief_input(
     event = EVENTS[event_code]
     event_number = event.get("event_number")
     base_brief = event.get("brief") or {}
-    merger_conflicts: List[str] = []
-    incoming = extract_brief_from_text(message.text or "")
     participant_name = data.get("participant_name") or (
         message.from_user.full_name if message.from_user else str(message.chat.id)
     )
+    incoming, structured = parse_message_to_brief(
+        message.text or "",
+        role="participant",
+        participant_name=participant_name,
+    )
     updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
     change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
-    conflict_keys = []
-    for key in incoming.keys():
-        if key in base_brief and base_brief.get(key) != incoming.get(key):
-            conflict_keys.append(key)
-    if brief_pipeline.structured_pipeline_enabled():
-        structured_participant = brief_pipeline.parse_participant_message(
-            message.text or "",
-            participant_name,
+    merger_conflicts: List[str] = list(base_brief.get("group_conflicts") or [])
+    if structured:
+        participant_inputs = event.get("participant_inputs_structured") or []
+        event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
+            participant_inputs,
+            structured,
         )
-        if structured_participant:
-            participant_inputs_structured = event.get("participant_inputs_structured") or []
-            participant_inputs_structured = brief_pipeline.upsert_participant_input(
-                participant_inputs_structured,
-                structured_participant,
-            )
-            event["participant_inputs_structured"] = participant_inputs_structured
-            merged_structured = brief_pipeline.merge_brief_inputs(
-                base_brief_json=event.get("base_brief_structured") or {},
-                participant_inputs_json=participant_inputs_structured,
-                new_input_json=structured_participant,
-                current_event_status=_event_status_info(event).get("key", "active"),
-            )
-            if merged_structured:
-                event["merged_brief_structured"] = merged_structured
-                merger_conflicts = [
-                    str(item.get("topic") or item.get("description") or "расхождение")
-                    for item in (merged_structured.get("conflicts") or [])
-                    if isinstance(item, dict)
-                ]
+        merger_conflicts = run_group_merger_for_event(event)
+        if merger_conflicts:
+            updated_brief["group_conflicts"] = merger_conflicts
     event["brief"] = updated_brief
 
     updates = event.setdefault("participant_updates", {})
@@ -1044,14 +1036,25 @@ async def handle_participant_conversation(message: Message, state: FSMContext) -
         message.from_user.full_name if message.from_user else str(message.chat.id)
     )
 
-    incoming = extract_brief_from_text(text)
+    incoming, structured = parse_message_to_brief(
+        text, role="participant", participant_name=participant_name
+    )
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
     updated_brief = base_brief
     change_info = {"added_fields": [], "updated_fields": []}
-    merger_conflicts: List[str] = []
+    merger_conflicts: List[str] = list((base_brief or {}).get("group_conflicts") or [])
     if brief_updated:
         updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
         change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+        if structured:
+            participant_inputs = event.get("participant_inputs_structured") or []
+            event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
+                participant_inputs,
+                structured,
+            )
+            merger_conflicts = run_group_merger_for_event(event)
+            if merger_conflicts:
+                updated_brief["group_conflicts"] = merger_conflicts
         event["brief"] = updated_brief
         touch_event(event)
         save_events()
@@ -1145,6 +1148,8 @@ def format_brief_unified(
     event_number: Optional[int],
     title: str,
     subtitle: str,
+    *,
+    group_conflicts: Optional[List[str]] = None,
 ) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value))
@@ -1257,6 +1262,12 @@ def format_brief_unified(
     lines.append("\n🎯 <b>Пожелания по формату поездки</b>")
     lines.extend([f"• {f}" for f in style_facts])
 
+    conflicts = group_conflicts if group_conflicts is not None else brief.get("group_conflicts")
+    if conflicts:
+        lines.append("\n⚠️ <b>Расхождения в группе</b>")
+        for item in conflicts:
+            lines.append(f"• {esc(item)}")
+
     participant_preferences = brief.get("participant_preferences") or {}
     if participant_preferences:
         lines.append("\n👤 <b>Что добавили участники</b>")
@@ -1332,14 +1343,6 @@ def participant_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✨ Создать поездку", callback_data="event:create")],
-        ]
-    )
-
-
-def organizer_next_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✨ Создать поездку", callback_data="event:create")],
@@ -2397,14 +2400,12 @@ async def cancel_handler(message: Message, state: FSMContext) -> None:
 
 def log_runtime_flags() -> None:
     live_on = env_util.env_flag("USE_LLM_LIVE_RESPONSES")
-    parser_on = env_util.env_flag("USE_LLM_BRIEF_PARSER")
-    pipeline_on = env_util.env_flag("USE_STRUCTURED_BRIEF_PIPELINE")
-    has_key = bool(os.getenv("LLM_API_KEY", "").strip())
+    mode = get_parser_mode()
+    has_key = llm_available()
     logging.info(
-        "Runtime flags: live_responses=%s parser_llm=%s structured_pipeline=%s llm_api_key=%s",
+        "Runtime flags: live_responses=%s parser_mode=%s llm_api_key=%s",
         live_on,
-        parser_on,
-        pipeline_on,
+        mode,
         "set" if has_key else "MISSING",
     )
     if live_on and not has_key:

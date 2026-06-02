@@ -4,18 +4,11 @@ from pathlib import Path
 
 BOT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = BOT_ROOT / "src"
-
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import brief_pipeline  # noqa: E402
-
-
-def test_structured_pipeline_flag(monkeypatch) -> None:
-    monkeypatch.setenv("USE_STRUCTURED_BRIEF_PIPELINE", "false")
-    assert brief_pipeline.structured_pipeline_enabled() is False
-    monkeypatch.setenv("USE_STRUCTURED_BRIEF_PIPELINE", "TRUE")
-    assert brief_pipeline.structured_pipeline_enabled() is True
+import parser_mode  # noqa: E402
 
 
 def test_upsert_participant_input_replaces_same_name() -> None:
@@ -28,3 +21,13 @@ def test_upsert_participant_input_replaces_same_name() -> None:
     assert len(updated) == 2
     maria = [row for row in updated if row.get("participant_name") == "Maria"][0]
     assert maria == new_row
+
+
+def test_role_llm_requires_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("PARSER_MODE", "role_llm")
+    monkeypatch.delenv("USE_STRUCTURED_BRIEF_PIPELINE", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    assert parser_mode.get_parser_mode() == "role_llm"
+    assert parser_mode.role_llm_active() is False
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    assert parser_mode.role_llm_active() is True

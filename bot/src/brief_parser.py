@@ -1,89 +1,17 @@
-import json
 import logging
-import os
 import re
-import urllib.error
-import urllib.request
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from env_util import env_flag
+import brief_flat_mapper
+import brief_pipeline
+from parser_mode import role_llm_active
 
 
 LAST_PARSER_MODE = "rules_only"
-PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-BRIEF_PARSER_PROMPT_FILE = PROMPTS_DIR / "brief_parser_system_prompt.md"
-_BRIEF_PARSER_PROMPT_CACHE: Optional[str] = None
 
 
 def get_last_parser_mode() -> str:
     return LAST_PARSER_MODE
-
-
-def get_brief_parser_prompt() -> str:
-    global _BRIEF_PARSER_PROMPT_CACHE
-    if _BRIEF_PARSER_PROMPT_CACHE is not None:
-        return _BRIEF_PARSER_PROMPT_CACHE
-    try:
-        _BRIEF_PARSER_PROMPT_CACHE = BRIEF_PARSER_PROMPT_FILE.read_text(encoding="utf-8")
-    except Exception as err:
-        logging.warning("Failed to load brief parser prompt: %s", err)
-        _BRIEF_PARSER_PROMPT_CACHE = ""
-    return _BRIEF_PARSER_PROMPT_CACHE
-
-
-def parse_brief_with_llm(text: str) -> Dict[str, Any]:
-    enabled = env_flag("USE_LLM_BRIEF_PARSER")
-    api_key = os.getenv("LLM_API_KEY")
-    if not enabled or not api_key:
-        return {}
-
-    prompt = get_brief_parser_prompt()
-    if not prompt:
-        return {}
-
-    model = os.getenv("LLM_PARSER_MODEL", "gpt-4o-mini")
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": (text or "").strip()},
-        ],
-        "temperature": 0,
-        "response_format": {"type": "json_object"},
-    }
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            raw = resp.read().decode("utf-8")
-        parsed = json.loads(raw)
-        content = parsed["choices"][0]["message"]["content"]
-        if not content:
-            return {}
-        result = json.loads(content)
-        if isinstance(result, dict):
-            return result
-        return {}
-    except (
-        urllib.error.URLError,
-        urllib.error.HTTPError,
-        KeyError,
-        ValueError,
-        TimeoutError,
-        OSError,
-        IndexError,
-        TypeError,
-    ) as err:
-        logging.warning("LLM brief parser unavailable, fallback to rule-based parser: %s", err)
-        return {}
 
 
 # (stem in lowercased text, display name, default climate if user discusses weather/climate)
@@ -551,19 +479,49 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     return missing
 
 
-def extract_brief_from_text(text: str) -> Dict[str, Any]:
+def parse_message_to_brief(
+    text: str,
+    *,
+    role: str = "organizer",
+    participant_name: str = "",
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Парсинг одного сообщения: rules → (опц.) LLM по режиму PARSER_MODE.
+    Возвращает (плоский дельта-бриф, structured JSON или {}).
+    """
     global LAST_PARSER_MODE
     rule_based = extract_brief_rule_based(text)
-    llm_enabled = env_flag("USE_LLM_BRIEF_PARSER") and bool(os.getenv("LLM_API_KEY", "").strip())
-    llm_brief = parse_brief_with_llm(text)
-    if not llm_enabled:
-        LAST_PARSER_MODE = "rules_only"
-    elif llm_brief:
-        LAST_PARSER_MODE = "llm+rules"
+    structured: Dict[str, Any] = {}
+    llm_flat: Dict[str, Any] = {}
+
+    if role_llm_active():
+        if role == "participant":
+            structured = brief_pipeline.parse_participant_message(text, participant_name)
+            llm_flat = brief_flat_mapper.participant_structured_to_flat(structured)
+        else:
+            structured = brief_pipeline.parse_organizer_message(text)
+            llm_flat = brief_flat_mapper.organizer_structured_to_flat(structured)
+        if llm_flat:
+            LAST_PARSER_MODE = "role_llm+rules"
+        else:
+            LAST_PARSER_MODE = "role_llm_fallback"
     else:
-        LAST_PARSER_MODE = "llm_fallback"
-    # Сначала правила (факты из текста), LLM только дополняет — не затирает пустыми ключами.
-    return merge_brief(rule_based, llm_brief)
+        LAST_PARSER_MODE = "rules_only"
+
+    flat = merge_brief(rule_based, llm_flat)
+    return flat, structured
+
+
+def extract_brief_from_text(
+    text: str,
+    *,
+    role: str = "organizer",
+    participant_name: str = "",
+) -> Dict[str, Any]:
+    flat, _structured = parse_message_to_brief(
+        text, role=role, participant_name=participant_name
+    )
+    return flat
 
 
 def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:

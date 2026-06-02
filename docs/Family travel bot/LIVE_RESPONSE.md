@@ -48,9 +48,9 @@ LLM_LIVE_MODEL=gpt-4o-mini
 
 ## Не путать с парсингом брифа
 
-| Флаг | Задача |
-|------|--------|
-| `USE_LLM_BRIEF_PARSER` | Структура полей брифа (brief_input) |
+| Переменная | Задача |
+|------------|--------|
+| `PARSER_MODE` (`role_llm` рекомендуется) | Структура полей брифа — см. `PARSING_SPEC.md` |
 | `USE_LLM_LIVE_RESPONSES` | Живой диалог (conversation) + tie-break классификатора |
 
-Для «Греция / климат / август» нужен **brief parser** (или rule-based), не live response.
+Для «Греция / климат / август» нужен **парсер брифа** (`PARSER_MODE`), не live response.

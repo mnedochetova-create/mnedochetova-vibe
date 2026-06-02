@@ -17,10 +17,6 @@ _PARTICIPANT_PROMPT_CACHE: Optional[str] = None
 _MERGER_PROMPT_CACHE: Optional[str] = None
 
 
-def structured_pipeline_enabled() -> bool:
-    return os.getenv("USE_STRUCTURED_BRIEF_PIPELINE", "false").strip().lower() == "true"
-
-
 def _load_prompt(path: Path, cache_value: Optional[str], label: str) -> str:
     if cache_value is not None:
         return cache_value
