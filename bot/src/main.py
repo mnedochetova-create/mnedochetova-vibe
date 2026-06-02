@@ -1639,7 +1639,8 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
         f"{BOT_CAPABILITIES_HELP_BLOCK}\n\n"
         "🆘 <b>Помощь</b>\n"
         "Выбери, с чем помочь: продолжить сценарий, разобраться с вводными или решить проблему со ссылкой.\n\n"
-        f"{context_block}",
+        f"{context_block}\n\n"
+        f"<i>build: {html.escape(ui_feedback.BOT_UI_VERSION)}</i>",
         reply_markup=help_keyboard(),
     )
     await log_session_action(message.bot, message, "помощь")
