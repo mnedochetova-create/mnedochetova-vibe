@@ -231,7 +231,7 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     for label in _direction_labels_from_brief(brief):
         _append_unique(setting, [label])
 
-    if "море" in t or "пляж" in t:
+    if "море" in t or "пляж" in t or "у моря" in t or "на море" in t or "на берегу" in t:
         _append_unique(setting, ["море", "пляж"])
     if re.search(r"\bгор", t):
         _append_unique(setting, ["горы"])

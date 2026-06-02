@@ -102,6 +102,12 @@ documents может содержать:
   "confidence": "high|medium|low"
 }
 
+## Сценарий и локация (stay_experience)
+
+Как у организатора: `stay_experience` с полями setting, accommodation_style, trip_style, season_note.
+Личные формулировки участника («тихий отель у моря», «бутик», «без шума») — в stay_experience, не только в activity_preferences.
+location_preferences → setting; accommodation_preferences → accommodation_style.
+
 ## Нормализация
 
 - "250к" -> 250000

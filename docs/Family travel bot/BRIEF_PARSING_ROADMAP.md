@@ -20,24 +20,24 @@ Live LLM (`USE_LLM_LIVE_RESPONSES`) — только intro; killer — парс�
 
 ## Риски (актуальные)
 
-- [ ] Мало кейсов в `brief_parsing_golden.jsonl`.
-- [ ] Направления в `activity_preferences` — нужна нормализация для подбора.
-- [ ] `party_preferences` — слабое покрытие rule-based.
-- [ ] Метрики wow не зафиксированы числом.
+- [x] Golden расширен (22 кейса, rules + enrich; `expected_nested` для stay/party).
+- [ ] Направления в `activity_preferences` — нужна нормализация для подбора (фаза D).
+- [x] `party_preferences` — базовые rules (split-отели, мама/муж/племянник); сложные фразы — LLM.
+- [x] Метрики P1 в CI: `field_recall ≥ 0.97`, `case_pass_rate ≥ 0.95` (`test_brief_parsing.py`).
 
 ## План работ
 
 ### Фаза A — Диагностика
 
-- [ ] 3–5 реальных вводных (организатор + участник).
+- [ ] 3–5 реальных вводных (организатор + участник) — **ручной ретест в боте**.
 - [ ] Таблица: извлекли / потеряли / додумали.
 - [ ] Railway: `PARSER_MODE=role_llm`, `LLM_API_KEY`.
 
 ### Фаза B — Качество извлечения
 
-- [ ] Расширить golden.
-- [ ] Правки `brief_parser.py` (rules) и промптов organizer/participant.
-- [ ] `pytest bot/tests/test_brief_parsing.py`.
+- [x] Расширить golden (`brief_parsing_golden.jsonl`, participant cases).
+- [x] Правки `brief_parser.py` (party, stay enrich) и промпт participant (stay_experience).
+- [x] `pytest bot/tests/test_brief_parsing.py` + пороги P1 + `test_brief_p1_organizer_flow.py`.
 
 ### Фаза C — Wow в чате (UX-апрув)
 

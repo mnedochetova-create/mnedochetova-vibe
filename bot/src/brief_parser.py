@@ -308,6 +308,14 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             family.setdefault("notes", []).append("часть поездки с мамой")
         if "с пап" in t:
             family.setdefault("notes", []).append("часть поездки с папой")
+    if "племянник" in t or "племянниц" in t or "внук" in t or "внучк" in t:
+        rel = ensure_party("родственники")
+        if "племянник" in t or "племянниц" in t:
+            rel.setdefault("notes", []).append("поездка с племянником")
+        if "внук" in t or "внучк" in t:
+            rel.setdefault("notes", []).append("поездка с внуками")
+    if "недел" in t and ("с мам" in t or "мамой" in t):
+        ensure_party("семья").setdefault("notes", []).append("неделя с мамой")
 
     if parties:
         brief["party_preferences"] = parties
