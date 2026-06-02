@@ -14,15 +14,17 @@ import pytest
 
 BOT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = BOT_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+TESTS_DIR = BOT_ROOT / "tests"
+for path in (SRC_DIR, TESTS_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 import brief_display  # noqa: E402
 import brief_parser  # noqa: E402
 import brief_stay_enrich  # noqa: E402
 import main  # noqa: E402
 
-from tests.test_brief_france_family import FRANCE_FAMILY_TEXT  # noqa: E402
+from test_brief_france_family import FRANCE_FAMILY_TEXT  # noqa: E402
 
 pytestmark = pytest.mark.p1_retest
 

@@ -1782,14 +1782,33 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     )
 
 
-async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    event_code = data.get("event_code")
-    event = EVENTS.get(event_code) if event_code else None
-
-    if event:
-        ensure_event_invite_link(event)
-    event_number = event.get("event_number") if event else None
+async def show_organizer_invite_step(
+    message: Message,
+    state: FSMContext,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+    event_code: Optional[str] = None,
+) -> bool:
+    """Показать актуальный шаг «Поделиться приглашением». Возвращает False, если ссылка недоступна."""
+    if event is None:
+        code = event_code or (await state.get_data()).get("event_code")
+        event = EVENTS.get(code) if code else None
+    if not event:
+        _code, event = await _organizer_event_from_state(state)
+    if not event:
+        await message.answer(
+            "Сначала создай поездку через «✨ Новая поездка».",
+            reply_markup=main_menu_keyboard(),
+        )
+        return False
+    ensure_event_invite_link(event)
+    if not event.get("invite_link"):
+        await message.answer(
+            "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return False
+    event_number = event.get("event_number")
     await message.answer(
         format_invite_step_message(event_number, event=event),
         reply_markup=invite_ready_keyboard(event),
@@ -1802,27 +1821,16 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
         event_number=event_number,
     )
     await flush_session_milestone(message.bot, message, "invite_shown")
+    return True
+
+
+async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
+    await show_organizer_invite_step(message, state)
 
 
 async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
     event = EVENTS.get(event_code) if event_code else None
-    if event:
-        ensure_event_invite_link(event)
-    await message.answer(
-        format_invite_step_message(
-            event.get("event_number") if event else None,
-            event=event,
-        ),
-        reply_markup=invite_ready_keyboard(event),
-    )
-    await log_session_action(
-        message.bot,
-        message,
-        "показ приглашения",
-        role="organizer",
-        event_number=event.get("event_number") if event else None,
-    )
-    await flush_session_milestone(message.bot, message, "invite_shown")
+    await show_organizer_invite_step(message, state, event=event, event_code=event_code)
 
 
 async def event_create_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -1854,12 +1862,21 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
     if is_organizer:
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
+        missing = missing_brief_fields(brief)
         await callback.message.answer(
             f"👑 Ты снова в поездке <b>#{event_number if isinstance(event_number, int) else html.escape(event_code)}</b> как организатор.\n\n"
-            f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
-            "Продолжай уточнения одним сообщением.",
+            f"{format_brief_update_message(brief, event_number=event_number, missing=missing)}\n\n"
+            + (
+                "Продолжай уточнения одним сообщением."
+                if missing
+                else "Бриф готов — ниже можно снова поделиться приглашением."
+            ),
             reply_markup=main_menu_keyboard(),
         )
+        if not missing:
+            await show_organizer_invite_step(
+                callback.message, state, event=event, event_code=event_code
+            )
         return
 
     participant_name = (
@@ -2025,24 +2042,13 @@ async def event_how_callback_handler(callback: CallbackQuery) -> None:
 
 
 async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    """Старые сообщения с кнопкой «Показать ссылку» — перенаправляем на шаг приглашения."""
+    """Старые inline-кнопки invite_link — перенаправляем на актуальный шаг приглашения."""
     await event_invite_share_callback_handler(callback, state)
 
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state)
-    if not event or not event.get("invite_link"):
-        await callback.message.answer(
-            "Ссылка пока недоступна. Создай поездку заново через «✨ Новая поездка».",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-    ensure_event_invite_link(event)
-    await callback.message.answer(
-        format_invite_step_message(event.get("event_number"), event=event),
-        reply_markup=invite_ready_keyboard(event),
-    )
+    await show_organizer_invite_step(callback.message, state)
 
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -2113,10 +2119,7 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
             reply_markup=main_menu_keyboard(),
         )
         if not missing and event.get("invite_link"):
-            await message.answer(
-                "Можешь снова поделиться приглашением с участниками.",
-                reply_markup=invite_waiting_keyboard(event),
-            )
+            await show_organizer_invite_step(message, state, event=event, event_code=event_code)
         return
     participant_name = from_user.full_name if from_user and getattr(from_user, "full_name", None) else str(message.chat.id)
     await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
@@ -2189,19 +2192,12 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
             reply_markup=help_keyboard(),
         )
         return
-    _event_code, event = await _organizer_event_from_state(state)
-    if event:
-        ensure_event_invite_link(event)
-    if not event or not event.get("invite_link"):
+    if not await show_organizer_invite_step(callback.message, state):
         await callback.message.answer(
             "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
             reply_markup=help_keyboard(),
         )
         return
-    await callback.message.answer(
-        format_invite_step_message(event.get("event_number"), event=event),
-        reply_markup=invite_ready_keyboard(event),
-    )
     await callback.message.answer(
         "Если участник не может войти — попроси открыть ссылку из приглашения заново "
         "или отправить /start в боте.",

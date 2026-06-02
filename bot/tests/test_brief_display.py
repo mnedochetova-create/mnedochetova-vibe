@@ -10,7 +10,7 @@ import brief_display  # noqa: E402
 import brief_parser  # noqa: E402
 import brief_stay_enrich  # noqa: E402
 
-from tests.test_brief_france_family import FRANCE_FAMILY_TEXT  # noqa: E402
+from test_brief_france_family import FRANCE_FAMILY_TEXT  # noqa: E402
 
 
 def test_france_trip_title_and_duration() -> None:
