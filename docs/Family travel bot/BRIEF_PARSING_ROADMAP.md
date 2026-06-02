@@ -29,8 +29,8 @@ Live LLM (`USE_LLM_LIVE_RESPONSES`) — только intro; killer — парс�
 
 ### Фаза A — Диагностика
 
-- [ ] 3–5 реальных вводных (организатор + участник) — **ручной ретест в боте** (шаблон: [`P1_MANUAL_RETEST.md`](P1_MANUAL_RETEST.md)).
-- [ ] Таблица в `P1_MANUAL_RETEST.md`: извлекли / потеряли / додумали (baseline rules заполнен, колонка «в боте» — после Railway).
+- [x] 5 кейсов P1 — **авторетест в CI** (`test_p1_manual_retest.py`, `bot-tests.yml`).
+- [ ] Колонка «в боте» в [`P1_MANUAL_RETEST.md`](P1_MANUAL_RETEST.md) — ручной smoke в Telegram после Railway.
 - [ ] Railway: `PARSER_MODE=role_llm`, `LLM_API_KEY`.
 
 ### Фаза B — Качество извлечения

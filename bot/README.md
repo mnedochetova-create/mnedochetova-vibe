@@ -78,7 +78,7 @@
 
 **Вариант B — GitHub Actions (тесты, затем `railway up`)**  
 
-В репозитории включён workflow `.github/workflows/deploy-railway.yml`: на push в `main` или ручной запуск (**Actions** → **Deploy bot (Railway)** → **Run workflow**) гоняется `pytest`, затем выкладка через Railway CLI.
+В репозитории: `.github/workflows/bot-tests.yml` — полный `pytest` при изменениях в `bot/`; `.github/workflows/deploy-railway.yml` — тесты + выкладка на push в `main` (**Actions** → **Deploy bot (Railway)**).
 
 1. В Railway: **Project → Settings → Tokens** — создайте **Project token** (не персональный API token с другого экрана).  
 2. В GitHub: **Settings → Secrets and variables → Actions** — секрет **`RAILWAY_TOKEN`** (project token).  
@@ -122,7 +122,9 @@
 ## Проверка качества парсинга
 
 - Быстрый отчёт: `python3 bot/tests/test_brief_parsing.py`
-- Тест-сюита: `python3 -m pytest -q bot/tests/test_brief_parsing.py`
+- Тесты: `python3 -m pytest -q bot/tests/` (golden + P1-ретест).
+- P1-ретест (5 кейсов из `docs/Family travel bot/P1_MANUAL_RETEST.md`): `python3 -m pytest -q bot/tests/test_p1_manual_retest.py`
+- CI: `.github/workflows/bot-tests.yml` (полный набор); перед Railway — `deploy-railway.yml`
 
 ## Логи в Telegram-группу
 
