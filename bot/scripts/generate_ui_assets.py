@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Сгенерировать thinking.gif и success.gif из bot/assets/logo.png (нужен Pillow)."""
+"""Сгенерировать thinking.mp4 и success.mp4 из bot/assets/logo.png (Pillow + ffmpeg)."""
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw
+    from PIL import Image
 except ImportError as err:
     raise SystemExit("pip install Pillow") from err
 
@@ -15,6 +18,13 @@ ASSETS = ROOT / "assets"
 LOGO = ASSETS / "logo.png"
 CANVAS = 512
 BG_RGB = (67, 86, 255)
+
+
+def _require_ffmpeg() -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("ffmpeg not found — install ffmpeg or build via Dockerfile")
+    return ffmpeg
 
 
 def _square_logo() -> Image.Image:
@@ -26,41 +36,55 @@ def _square_logo() -> Image.Image:
     top = (logo.height - side) // 2
     logo = logo.crop((left, top, left + side, top + side))
     fit = int(CANVAS * 0.82)
-    logo = logo.resize((fit, fit), Image.Resampling.LANCZOS)
-    return logo
+    return logo.resize((fit, fit), Image.Resampling.LANCZOS)
 
 
-def _paste_rotated(canvas: Image.Image, logo: Image.Image, angle: float) -> Image.Image:
+def _frame(logo: Image.Image, angle: float) -> Image.Image:
     rotated = logo.rotate(-angle, resample=Image.Resampling.BICUBIC, expand=True)
-    layer = Image.new("RGBA", canvas.size, (*BG_RGB, 255))
+    canvas = Image.new("RGB", (CANVAS, CANVAS), BG_RGB)
     x = (CANVAS - rotated.width) // 2
     y = (CANVAS - rotated.height) // 2
-    layer.paste(rotated, (x, y), rotated)
-    return layer.convert("RGB")
+    canvas.paste(rotated, (x, y), rotated)
+    return canvas
 
 
-def _to_gif_palette(frame: Image.Image) -> Image.Image:
-    return frame.convert("P", palette=Image.ADAPTIVE, colors=256)
+def _write_mp4(frames: list[Image.Image], out: Path, *, fps: int = 20) -> None:
+    ffmpeg = _require_ffmpeg()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        for index, frame in enumerate(frames):
+            frame.save(tmp / f"frame_{index:03d}.png")
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-framerate",
+                str(fps),
+                "-i",
+                str(tmp / "frame_%03d.png"),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-an",
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
 
 
-def thinking_gif() -> None:
+def thinking_mp4() -> None:
     logo = _square_logo()
-    frames = [_to_gif_palette(_paste_rotated(Image.new("RGB", (CANVAS, CANVAS), BG_RGB), logo, i * 15)) for i in range(24)]
-    out = ASSETS / "thinking.gif"
-    frames[0].save(
-        out,
-        format="GIF",
-        save_all=True,
-        append_images=frames[1:],
-        duration=60,
-        loop=0,
-        disposal=2,
-        optimize=False,
-    )
+    frames = [_frame(logo, i * 15) for i in range(24)]
+    out = ASSETS / "thinking.mp4"
+    _write_mp4(frames, out)
     print("wrote", out, "size", out.stat().st_size)
 
 
-def success_gif() -> None:
+def success_mp4() -> None:
     logo = _square_logo()
     frames = []
     for scale in (1.0, 1.06, 1.0, 1.03, 1.0):
@@ -70,22 +94,13 @@ def success_gif() -> None:
         x = (CANVAS - fit) // 2
         y = (CANVAS - fit) // 2
         canvas.paste(scaled, (x, y), scaled)
-        frames.append(_to_gif_palette(canvas))
-    out = ASSETS / "success.gif"
-    frames[0].save(
-        out,
-        format="GIF",
-        save_all=True,
-        append_images=frames[1:],
-        duration=140,
-        loop=1,
-        disposal=2,
-        optimize=False,
-    )
+        frames.append(canvas)
+    out = ASSETS / "success.mp4"
+    _write_mp4(frames, out, fps=12)
     print("wrote", out, "size", out.stat().st_size)
 
 
 if __name__ == "__main__":
     ASSETS.mkdir(parents=True, exist_ok=True)
-    thinking_gif()
-    success_gif()
+    thinking_mp4()
+    success_mp4()
