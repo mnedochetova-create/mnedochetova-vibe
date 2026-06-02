@@ -198,16 +198,14 @@ def invite_share_text_for_event(
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Открывает выбор чата/контакта для пересылки (кнопка с url=).
-
-    Только параметр text: сначала текст приглашения, ссылка — в конце одной строкой.
-    Без url=, иначе Telegram ставит сырую ссылку первой строкой сообщения.
-    """
-    prose = (share_text or build_invite_share_text(invite_link)).strip()
-    if invite_link and invite_link in prose:
-        prose = prose.replace(invite_link, "").strip().rstrip("\n")
-    text = f"{prose}\n\n{invite_link}"
-    return f"https://t.me/share/url?text={quote(text, safe='')}"
+    """Открывает выбор чата/контакта в Telegram (t.me/share/url)."""
+    text = share_text if share_text is not None else build_invite_share_text(invite_link)
+    if invite_link and invite_link in text:
+        text = text.replace(invite_link, "").strip().rstrip("\n")
+    return (
+        "https://t.me/share/url?"
+        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
+    )
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -1472,12 +1470,6 @@ def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeybo
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Поделиться приглашением", url=share_url)],
-                [
-                    InlineKeyboardButton(
-                        text="✅ Приглашение отправлено",
-                        callback_data="event:invite_sent",
-                    )
-                ],
             ]
         )
     return InlineKeyboardMarkup(
