@@ -163,31 +163,46 @@ def format_trip_created_organizer_message(event_number: Any) -> str:
 
 
 def build_invite_share_text(
-    invite_link: str, *, trip_title: Optional[str] = None
+    invite_link: str,
+    *,
+    trip_title: Optional[str] = None,
+    include_link: bool = False,
 ) -> str:
-    """Текст, который организатор пересылает участнику (диалог «Поделиться» в Telegram)."""
+    """Текст приглашения для пересылки участнику.
+
+    Для t.me/share/url ссылку в текст не добавляем — Telegram подставляет её из параметра url.
+    """
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
-    return (
+    body = (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
         "Организатор собрал базовый бриф — присоединяйся по ссылке, "
         "посмотри в боте, что уже собрано, и допиши одним сообщением, "
-        "что важно лично тебе.\n\n"
-        f"{invite_link}"
+        "что важно лично тебе."
     )
+    if include_link:
+        return f"{body}\n\n{invite_link}"
+    return body
 
 
-def invite_share_text_for_event(event: Dict[str, Any]) -> str:
+def invite_share_text_for_event(
+    event: Dict[str, Any], *, include_link: bool = False
+) -> str:
     invite_link = str((event or {}).get("invite_link") or "").strip()
     brief = (event or {}).get("brief") or {}
     if not str(brief.get("trip_title") or "").strip():
         brief_display.sync_trip_title(brief)
     trip_title = brief_display.get_trip_title(brief)
-    return build_invite_share_text(invite_link, trip_title=trip_title)
+    return build_invite_share_text(
+        invite_link, trip_title=trip_title, include_link=include_link
+    )
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
     """Открывает выбор чата/контакта для пересылки (кнопка с url=)."""
     text = share_text if share_text is not None else build_invite_share_text(invite_link)
+    if invite_link and invite_link in text:
+        text = text.replace(invite_link, "").strip()
+        text = text.rstrip("\n")
     return (
         "https://t.me/share/url?"
         f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
