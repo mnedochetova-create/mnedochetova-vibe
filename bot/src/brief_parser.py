@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import brief_flat_mapper
 import brief_pipeline
+import brief_display
 import brief_stay_enrich
 from parser_mode import role_llm_active
 
@@ -119,19 +120,34 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         brief["budget_rub_min"] = low
         brief["budget_rub_max"] = high
 
-    m_eur = re.search(
-        r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:евро|eur|€)",
-        t,
+    _foreign_budget_patterns = (
+        (r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:евро|eur|€)", "EUR", "budget_eur_max"),
+        (r"(\d[\d\s]{1,8})\s*(?:евро|eur|€)", "EUR", "budget_eur_max"),
+        (r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:доллар|usd|\$)", "USD", "budget_usd_max"),
+        (r"(\d[\d\s]{1,8})\s*(?:доллар|usd|\$)", "USD", "budget_usd_max"),
+        (r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:фунт|gbp|£)", "GBP", "budget_gbp_max"),
+        (r"(\d[\d\s]{1,8})\s*(?:фунт|gbp|£)", "GBP", "budget_gbp_max"),
+        (r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:лир|try|₺)", "TRY", "budget_try_max"),
+        (r"(\d[\d\s]{1,8})\s*(?:лир|try|₺)", "TRY", "budget_try_max"),
+        (r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:дирхам|aed)", "AED", "budget_aed_max"),
+        (r"(\d[\d\s]{1,8})\s*(?:дирхам|aed)", "AED", "budget_aed_max"),
     )
-    if not m_eur:
-        m_eur = re.search(r"(\d[\d\s]{1,8})\s*(?:евро|eur|€)", t)
-    if m_eur and "budget_eur_max" not in brief:
-        brief["budget_eur_max"] = int(re.sub(r"\s+", "", m_eur.group(1)))
-        brief["budget_currency"] = "EUR"
+    for pattern, currency, field_key in _foreign_budget_patterns:
+        m_foreign = re.search(pattern, t)
+        if m_foreign and field_key not in brief and "budget_amount_max" not in brief:
+            amount = int(re.sub(r"\s+", "", m_foreign.group(1)))
+            brief[field_key] = amount
+            brief["budget_amount_max"] = amount
+            brief["budget_currency"] = currency
+            break
 
     budget_value = None
     budget_suffix = ""
-    if "budget_rub_max" not in brief and "budget_eur_max" not in brief:
+    if (
+        "budget_rub_max" not in brief
+        and "budget_eur_max" not in brief
+        and "budget_amount_max" not in brief
+    ):
         m_budget = re.search(
             r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
             t,
@@ -211,9 +227,13 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if m:
         brief["trip_duration_days_raw"] = f"{m.group(1)}-{m.group(2)} дней"
     else:
-        m = re.search(r"(\d{1,2})\s*(?:дн|дней|дня)", t)
+        m = re.search(r"на\s+(\d{1,2})\s*(?:дн|дней|дня)\b", t)
         if m:
             brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
+        else:
+            m = re.search(r"(\d{1,2})\s*(?:дн|дней|дня)", t)
+            if m:
+                brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
 
     m = re.search(r"(?:до|не\s*больше|не\s*более)\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b", t)
     if not m:
@@ -448,7 +468,12 @@ def brief_completeness_score(brief: Dict[str, Any]) -> int:
         score += 3
     elif brief.get("trip_duration_days_raw"):
         score += 1
-    if brief.get("budget_rub_max") or brief.get("budget_eur_max") or brief.get("budget_flexible"):
+    if (
+        brief.get("budget_rub_max")
+        or brief.get("budget_eur_max")
+        or brief.get("budget_amount_max")
+        or brief.get("budget_flexible")
+    ):
         score += 3
     if brief.get("adults") or brief.get("kids_count"):
         score += 3
@@ -550,6 +575,7 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
         if _is_empty_brief_value(v) and not _is_empty_brief_value(out.get(k)):
             continue
         out[k] = v
+    brief_display.sync_trip_title(out)
     return out
 
 
@@ -659,7 +685,7 @@ def parse_message_to_brief(
         LAST_PARSER_MODE = "rules_only"
 
     flat = merge_brief(rule_based, llm_flat)
-    brief_stay_enrich.enrich_stay_from_context(flat)
+    brief_display.sync_trip_title(flat)
     return flat, structured
 
 
@@ -684,6 +710,7 @@ def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(dump_text, str) and dump_text.strip():
         from_dump = extract_brief_from_text(dump_text)
         brief = merge_brief(from_dump, brief)
+    brief_display.sync_trip_title(brief)
     return brief
 
 
@@ -764,4 +791,5 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
         if _is_empty_brief_value(v) and not _is_empty_brief_value(out.get(k)):
             continue
         out[k] = v
+    brief_display.sync_trip_title(out)
     return out

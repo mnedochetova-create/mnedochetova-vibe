@@ -36,44 +36,11 @@ import live_response
 import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
+import brief_display
 
 
-def format_budget_display(brief: Dict[str, Any]) -> str:
-    if brief.get("budget_eur_max"):
-        amount = f"{brief['budget_eur_max']:,}".replace(",", " ")
-        prefix = "гибкий, до " if brief.get("budget_flexible") else "до "
-        return f"{prefix}{amount} €"
-    if brief.get("budget_flexible") and brief.get("budget_rub_min") and brief.get("budget_rub_max"):
-        lo = f"{brief['budget_rub_min']:,}".replace(",", " ")
-        hi = f"{brief['budget_rub_max']:,}".replace(",", " ")
-        return f"гибкий, {lo}–{hi} ₽"
-    if brief.get("budget_rub_min") and brief.get("budget_rub_max"):
-        lo = f"{brief['budget_rub_min']:,}".replace(",", " ")
-        hi = f"{brief['budget_rub_max']:,}".replace(",", " ")
-        return f"{lo}–{hi} ₽"
-    if brief.get("budget_rub_max"):
-        prefix = "гибкий, до " if brief.get("budget_flexible") else "до "
-        return f"{prefix}{brief['budget_rub_max']:,} ₽".replace(",", " ")
-    if brief.get("budget_flexible"):
-        return "гибкий"
-    return "—"
-
-
-def format_flight_display(brief: Dict[str, Any], *, esc: Any = None) -> str:
-    esc_fn = esc if callable(esc) else (lambda value: value)
-    parts: List[str] = []
-    if brief.get("flight_hours_max"):
-        parts.append(f"до {esc_fn(brief['flight_hours_max'])} ч.")
-    elif brief.get("flight_hours_unrestricted"):
-        parts.append("без ограничений по длительности")
-    if brief.get("transfers_allowed") is True:
-        parts.append("пересадки допустимы")
-    elif brief.get("transfers_allowed") is False:
-        parts.append("прямой рейс")
-    prefs = brief.get("flight_preferences") or []
-    if prefs:
-        parts.append(", ".join(esc_fn(str(item)) for item in prefs))
-    return " · ".join(parts) if parts else "—"
+format_budget_display = brief_display.format_budget_display
+format_flight_display = brief_display.format_flight_display
 
 
 def setup_logging() -> None:
@@ -415,43 +382,41 @@ def pick_best_organizer_event(chat_id: int) -> Optional[tuple[str, Dict[str, Any
     return hits[0]
 
 
-async def ensure_organizer_event_code(message: Message, state: FSMContext) -> Optional[str]:
-    chat_id = message.chat.id
-    best = pick_best_organizer_event(chat_id)
-    if best:
-        code, event = best
-        await state.update_data(
-            role="organizer",
-            event_code=code,
-            brief=event.get("brief") or {},
-            organizer_chat_id=chat_id,
-        )
-        return code
-    return None
+def resolve_organizer_event_code(chat_id: int, preferred_code: Optional[str] = None) -> Optional[str]:
+    """Активная поездка организатора: сначала FSM/явный выбор, иначе самая свежая по updated_at."""
+    if preferred_code and preferred_code in EVENTS:
+        event = EVENTS[preferred_code]
+        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
+            return preferred_code
+    hits: list[tuple[str, Dict[str, Any]]] = []
+    for code, event in EVENTS.items():
+        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
+            hits.append((code, event))
+    if not hits:
+        return None
+    hits.sort(
+        key=lambda x: (
+            x[1].get("updated_at", x[1].get("created_at", 0)),
+            brief_parser.brief_completeness_score(x[1].get("brief") or {}),
+        ),
+        reverse=True,
+    )
+    return hits[0][0]
 
 
 async def resolve_organizer_event_and_brief(
     message: Message,
     state: FSMContext,
 ) -> tuple[str, Dict[str, Any]]:
-    """Всегда берём самый заполненный бриф организатора для чата (не пустой дубликат из FSM)."""
+    """Бриф пишем в поездку из FSM; без FSM — в последнюю обновлённую поездку организатора."""
     load_events()
     chat_id = message.chat.id
-    code = await ensure_organizer_event_code(message, state)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    code = resolve_organizer_event_code(chat_id, preferred if isinstance(preferred, str) else None)
     if not code:
         code = await bootstrap_organizer_event(message, state)
-    best = pick_best_organizer_event(chat_id)
-    if best:
-        best_code, best_event = best
-        best_brief = dict(best_event.get("brief") or {})
-        current_brief = dict(EVENTS.get(code, {}).get("brief") or {})
-        if brief_parser.brief_completeness_score(best_brief) > brief_parser.brief_completeness_score(
-            current_brief
-        ):
-            code = best_code
-        existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
-    else:
-        existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
+    existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
     await state.update_data(
         role="organizer",
         event_code=code,
@@ -475,15 +440,15 @@ async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str
 
 
 async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
-    existing = pick_best_organizer_event(message.chat.id)
-    if existing:
-        code, event = existing
-        await state.update_data(
-            role="organizer",
-            event_code=code,
-            brief=event.get("brief") or {},
-            organizer_chat_id=message.chat.id,
-        )
+    load_events()
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    code = resolve_organizer_event_code(
+        message.chat.id,
+        preferred if isinstance(preferred, str) else None,
+    )
+    if code:
+        await restore_organizer_fsm_state(state, code)
         return code
 
     event_code = new_event_code()
@@ -726,9 +691,8 @@ def build_organizer_brief_reply_parts(
     chat_id: int,
     missing: List[str],
 ) -> tuple[List[str], bool]:
-    insight = dialog_context.brief_insight_line(brief)
     summary_text = format_brief_update_message(
-        brief, event_number=event_number, insight=insight
+        brief, event_number=event_number, missing=missing
     )
     parts = [summary_text]
     if not missing:
@@ -808,9 +772,7 @@ async def handle_organizer_brief_input(
         message, state, flow_step=flow_step
     )
     summary_text = format_brief_update_message(
-        brief,
-        event_number=event_number,
-        insight=dialog_context.brief_insight_line(brief),
+        brief, event_number=event_number, missing=missing
     )
     step_label = "отправка брифа" if flow_step == "organizer_dump" else "уточнение брифа"
     await emit_parse_log(
@@ -899,9 +861,7 @@ async def handle_organizer_conversation(
         event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
         parts.append(
             format_brief_update_message(
-                brief,
-                event_number=event_number,
-                insight=dialog_context.brief_insight_line(brief),
+                brief, event_number=event_number, missing=missing
             )
         )
         parts.append(
@@ -971,6 +931,10 @@ async def route_organizer_text_message(
         role="organizer",
         flow_step=flow_step,
     )
+    if flow_step in {"organizer_dump", "organizer_clarify"}:
+        text_stripped = (message.text or "").strip()
+        if text_stripped and intent == "conversation":
+            intent = "brief_input"
     logging.info("Organizer message intent=%s flow_step=%s", intent, flow_step)
     if intent == "brief_input":
         await handle_organizer_brief_input(message, state, flow_step=flow_step)
@@ -1188,9 +1152,10 @@ def format_brief_unified(
     brief: Dict[str, Any],
     event_number: Optional[int],
     title: str,
-    subtitle: str,
+    subtitle: str = "",
     *,
     group_conflicts: Optional[List[str]] = None,
+    missing: Optional[List[str]] = None,
 ) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value))
@@ -1216,9 +1181,13 @@ def format_brief_unified(
 
     lines: list[str] = []
     lines.append(title)
-    event_label = f"#{event_number}" if isinstance(event_number, int) else "без номера"
-    lines.append(f"Событие: <b>{event_label}</b>")
-    lines.append(subtitle)
+    trip_title = brief_display.get_trip_title(brief)
+    if isinstance(event_number, int):
+        lines.append(f"<b>{esc(trip_title)}</b> <i>· #{event_number}</i>")
+    else:
+        lines.append(f"<b>{esc(trip_title)}</b>")
+    if subtitle:
+        lines.append(subtitle)
 
     def format_kids(count: int) -> str:
         # 1 ребенок, 2 ребенка, 5 детей
@@ -1257,15 +1226,11 @@ def format_brief_unified(
         group_value = "—"
     core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
-    core_facts.append(f"✈️ <b>Перелёт:</b> {esc(format_flight_display(brief, esc=esc))}")
-    duration_value = esc(brief["trip_duration_days_raw"]) if brief.get("trip_duration_days_raw") else "—"
+    core_facts.append(
+        f"✈️ <b>Перелёт:</b> {esc(format_flight_display(brief, esc=esc, missing=missing))}"
+    )
+    duration_value = esc(brief_display.normalize_duration_display(brief.get("trip_duration_days_raw")))
     core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
-
-    if "visa_required" in brief:
-        visa_value = "нужна" if brief["visa_required"] else "без визы"
-    else:
-        visa_value = "—"
-    core_facts.append(f"🛂 <b>Визы:</b> {visa_value}")
 
     passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
     core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
@@ -1275,29 +1240,14 @@ def format_brief_unified(
     style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
 
     directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
+    extra_filtered = brief_display.filter_extra_activity_preferences(brief, extra_activity)
+    if extra_filtered:
+        extra_value = ", ".join(esc(item) for item in extra_filtered)
+        style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
 
-    extra_value = ", ".join(esc(item) for item in extra_activity) if extra_activity else "—"
-    style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
-
-    party_prefs = brief.get("party_preferences") or {}
-    if party_prefs:
-        party_chunks: List[str] = []
-        for role_key, role_data in party_prefs.items():
-            if not isinstance(role_data, dict):
-                continue
-            bits: List[str] = []
-            for want in role_data.get("wants") or []:
-                bits.append(f"хочет: {want}")
-            for note in role_data.get("notes") or []:
-                bits.append(str(note))
-            for constraint in role_data.get("constraints") or []:
-                bits.append(f"ограничение: {constraint}")
-            if role_data.get("constraint"):
-                bits.append(f"ограничение: {role_data['constraint']}")
-            if bits:
-                party_chunks.append(f"{esc(role_key)} — " + "; ".join(esc(b) for b in bits))
-        if party_chunks:
-            style_facts.append("👥 <b>Роли в группе:</b> " + " · ".join(party_chunks))
+    party_summary = brief_display.format_party_group_summary(brief)
+    if party_summary:
+        style_facts.append(f"👥 <b>Группа:</b> {esc(party_summary)}")
 
     lines.append("\n🧱 <b>Базовые параметры поездки</b>")
     lines.extend([f"• {f}" for f in core_facts])
@@ -1329,8 +1279,6 @@ def format_brief_unified(
                 row.append("перелёт: пересадки допустимы")
             elif prefs.get("transfers_allowed") is False:
                 row.append("перелёт: без пересадок")
-            if "visa_required" in prefs:
-                row.append("визы: " + ("нужна" if prefs["visa_required"] else "без визы"))
             if prefs.get("passports_status"):
                 row.append("загранпаспорта: " + esc(prefs["passports_status"]))
             brief_stay_enrich.enrich_stay_from_context(prefs)
@@ -1355,16 +1303,13 @@ def format_brief_update_message(
     brief: Dict[str, Any],
     event_number: Optional[int] = None,
     *,
-    insight: str = "",
+    missing: Optional[List[str]] = None,
 ) -> str:
-    prefix = ""
-    if insight:
-        prefix = f"💡 <i>{html.escape(insight)}</i>\n\n"
-    return prefix + format_brief_unified(
+    return format_brief_unified(
         brief=brief,
         event_number=event_number,
-        title="✨ <b>Бриф поездки обновлён</b>",
-        subtitle="Собрала актуальную картину по событию.",
+        title="🌿 <b>Вот что собрала о твоей поездке</b>",
+        missing=missing if missing is not None else missing_brief_fields(brief),
     )
 
 
@@ -1372,8 +1317,8 @@ def format_brief_for_participant(brief: Dict[str, Any], event_number: Optional[i
     return format_brief_unified(
         brief=brief,
         event_number=event_number,
-        title="📌 <b>Актуальный бриф события</b>",
-        subtitle="Вот что уже согласовано на данный момент.",
+        title="📌 <b>Актуальный бриф поездки</b>",
+        missing=missing_brief_fields(brief),
     )
 
 
@@ -2388,6 +2333,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
 
 async def text_fallback_handler(message: Message, state: FSMContext) -> None:
+    load_events()
     logging.info(
         "Text fallback chat_id=%s state=%s text=%s",
         message.chat.id,
@@ -2424,8 +2370,9 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
             return
 
     if text_looks_like_brief_submission(message.text or ""):
-        await bootstrap_organizer_event(message, state)
-        await route_organizer_text_message(message, state, flow_step="organizer_dump")
+        event_code = await bootstrap_organizer_event(message, state)
+        flow_step = await restore_organizer_fsm_state(state, event_code)
+        await route_organizer_text_message(message, state, flow_step=flow_step)
         return
 
     await message.answer(

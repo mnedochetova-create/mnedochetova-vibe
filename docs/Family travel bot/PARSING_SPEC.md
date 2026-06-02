@@ -59,6 +59,7 @@
 - `documents_discussed` (`bool`) — тема документов явно обсуждена.
 - `passports_status` (`string`) — статус загранпаспортов.
 - `passports_notes` (`string[]`) — заметки по загранпаспортам.
+- `trip_title` (`string`) — короткое имя поездки для карточки (2–4 слова). Пересчитывается в `brief_display.sync_trip_title()` после парсинга и merge: страна из `stay_experience` / направления → «Во/В …» + уточнение состава («с семьёй», «вдвоём», «с компанией») или только направление. Пример: `Во Францию с семьёй`.
 - `stay_experience` (`object`) — сценарий отдыха: `setting`, `accommodation_style`, `trip_style`, `season_note` (собирается из текста, направления и дат; см. `brief_stay_enrich.py`).
 - `climate` (`string`) — legacy, дублируется из `stay_experience` для совместимости.
 - `trip_type` (`string`) — legacy, формат отдыха.

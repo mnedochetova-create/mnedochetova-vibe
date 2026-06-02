@@ -305,27 +305,114 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     return brief
 
 
+def _period_phrase(brief: Dict[str, Any]) -> str:
+    if brief.get("date_range_raw"):
+        raw = str(brief["date_range_raw"]).strip()
+        if raw.startswith("в "):
+            return raw
+        return f"в {raw}"
+    months = brief.get("months") or []
+    if months:
+        label = str(months[0]).strip()
+        if not label.startswith("в "):
+            return f"в {label}"
+        return label
+    return ""
+
+
+def _activity_phrase(se: Dict[str, Any], brief: Dict[str, Any]) -> str:
+    bits: List[str] = []
+    styles = [str(s).lower() for s in (se.get("trip_style") or [])]
+    settings = [str(s).lower() for s in (se.get("setting") or [])]
+    combined = " ".join(styles + settings)
+    if "пляж" in combined or "море" in combined:
+        bits.append("пляж и море")
+    if "ресторан" in combined or "гастроном" in combined:
+        bits.append("рестораны")
+    if "экскурс" in combined:
+        bits.append("экскурсии")
+    if "спокойн" in combined or "релакс" in combined:
+        bits.append("спокойный ритм")
+    for item in brief.get("activity_preferences") or []:
+        low = str(item).lower()
+        if "ресторан" in low and "рестораны" not in bits:
+            bits.append("рестораны")
+    if len(bits) == 1:
+        return bits[0]
+    if len(bits) == 2:
+        return f"{bits[0]} и {bits[1]}"
+    if bits:
+        return ", ".join(bits[:-1]) + f" и {bits[-1]}"
+    acc = se.get("accommodation_style") or []
+    if acc:
+        return str(acc[0]).lower()
+    return "отдых по вашим вводным"
+
+
+def _headline_place(se: Dict[str, Any]) -> Optional[str]:
+    settings = [str(s).strip() for s in (se.get("setting") or []) if str(s).strip()]
+    for tag in settings:
+        if "юг" in tag.lower() and "франц" in tag.lower():
+            return "На юг Франции"
+    for tag in settings:
+        if tag in {
+            "Франция",
+            "Турция",
+            "Греция",
+            "Италия",
+            "Испания",
+            "Кипр",
+            "Хорватия",
+            "Черногория",
+            "Болгария",
+            "Египет",
+            "Таиланд",
+            "Вьетнам",
+            "ОАЭ",
+            "Португалия",
+        }:
+            return f"В {tag}"
+    for tag in settings:
+        low = tag.lower()
+        if low in {"море", "пляж", "средиземноморье", "рестораны"}:
+            continue
+        if len(tag) > 4:
+            return f"В {tag}" if not tag.startswith("В ") else tag
+    return None
+
+
 def format_stay_experience_display(brief: Dict[str, Any], *, escape_html: bool = False) -> str:
-    """Одна строка для карточки брифа."""
+    """Короткий связный текст про направление и сезон для карточки брифа."""
     import html as html_module
 
     def esc(value: str) -> str:
         return html_module.escape(value) if escape_html else value
 
-    parts: List[str] = []
     se = brief.get("stay_experience") if isinstance(brief.get("stay_experience"), dict) else {}
+    place = _headline_place(se)
+    period = _period_phrase(brief)
+    activities = _activity_phrase(se, brief)
 
-    if se.get("setting"):
-        parts.append(esc(" · ".join(se["setting"])))
-    if se.get("accommodation_style"):
-        parts.append(esc(" · ".join(se["accommodation_style"])))
-    if se.get("trip_style"):
-        parts.append(esc(" · ".join(se["trip_style"])))
-    if se.get("season_note"):
-        parts.append(esc(str(se["season_note"])))
+    sentences: List[str] = []
+    if place and period:
+        sentences.append(esc(f"{place} {period} — {activities}."))
+    elif place:
+        sentences.append(esc(f"{place} — {activities}."))
+    elif period:
+        sentences.append(esc(f"Поездка {period} — {activities}."))
 
-    if parts:
-        return " · ".join(parts)
+    note = se.get("season_note")
+    period_blob = f"{brief.get('date_range_raw') or ''} {' '.join(brief.get('months') or [])}".lower()
+    if note:
+        short = str(note).split(",")[0].strip()
+        month_in_period = short.split("—")[0].strip().lower() if "—" in short else short.lower()
+        if short and month_in_period and month_in_period in period_blob:
+            short = ""
+        if short:
+            sentences.append(esc(short[0].upper() + short[1:] + "."))
+
+    if sentences:
+        return " ".join(sentences)
 
     legacy: List[str] = []
     if brief.get("climate"):
@@ -336,5 +423,5 @@ def format_stay_experience_display(brief: Dict[str, Any], *, escape_html: bool =
     if directions:
         legacy.append(", ".join(directions))
     if legacy:
-        return esc(" · ".join(legacy))
+        return esc(", ".join(legacy))
     return ""
