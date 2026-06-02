@@ -19,8 +19,14 @@ class DummyChat:
 
 
 class DummyUser:
-    def __init__(self, full_name: str, username: Optional[str] = None):
+    def __init__(
+        self,
+        full_name: str,
+        username: Optional[str] = None,
+        first_name: Optional[str] = None,
+    ):
         self.full_name = full_name
+        self.first_name = first_name or (full_name.split()[0] if full_name else None)
         self.username = username
 
 
@@ -133,6 +139,57 @@ def test_start_payload_rejoin_keeps_confirmed_flags(monkeypatch) -> None:
         assert participant["name"] == "New Name"
         assert participant["username"] == "new_username"
         assert participant["updated_at"] == 1700001111
+    finally:
+        main.EVENTS = original_events
+
+
+def test_format_participant_join_welcome_uses_name_and_trip_title() -> None:
+    user = DummyUser(full_name="Мария Иванова", first_name="Мария")
+    brief = {"trip_title": "Во Францию с семьёй"}
+    text = main.format_participant_join_welcome_message(user, brief)
+    assert "Мария" in text
+    assert "Во Францию с семьёй" in text
+    assert "успели собрать" in text.lower()
+    assert "Присоединиться" not in text
+    assert "базовый бриф" not in text.lower()
+    assert "#42" not in text
+
+
+def test_start_payload_join_welcome_message(monkeypatch) -> None:
+    chat_id = 444
+    event_code = "welcome01"
+    monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
+    monkeypatch.setattr(main, "save_events", lambda: None)
+    monkeypatch.setattr(main, "now_ts", lambda: 1700000000)
+    monkeypatch.setattr(main, "log_session_action", _noop_async)
+
+    original_events = main.EVENTS
+    main.EVENTS = {
+        event_code: {
+            "code": event_code,
+            "event_number": 1,
+            "organizer_chat_id": 999,
+            "participants": {},
+            "brief": {"trip_title": "Во Францию с семьёй"},
+        }
+    }
+    try:
+        message = DummyMessage(chat_id=chat_id, full_name="Мария И.", username="maria")
+        message.from_user.first_name = "Мария"
+        state = DummyState()
+        command = DummyCommand(args=f"join_{event_code}")
+
+        asyncio.run(main.start_payload_handler(message, command, state))
+
+        assert len(message.answers) >= 2
+        welcome_text, welcome_kb = message.answers[0]
+        assert "Мария" in welcome_text
+        assert "Во Францию с семьёй" in welcome_text
+        assert "успели собрать" in welcome_text.lower()
+        assert "Присоединиться" not in welcome_text
+        assert welcome_kb is None
+        brief_text, _ = message.answers[1]
+        assert "Во Францию с семьёй" in brief_text or "бриф" in brief_text.lower()
     finally:
         main.EVENTS = original_events
 
