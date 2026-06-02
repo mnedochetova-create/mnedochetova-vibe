@@ -194,11 +194,59 @@ def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> st
     )
 
 
-def format_invite_step_message(event_number: Optional[int] = None) -> str:
-    label = f"#{event_number}" if isinstance(event_number, int) else "поездке"
+def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
+    """Вернуть invite_link; при необходимости создать и сохранить."""
+    existing = str(event.get("invite_link") or "").strip()
+    if existing:
+        return existing
+    code = event.get("code")
+    if not BOT_USERNAME or not code:
+        return None
+    link = f"https://t.me/{BOT_USERNAME}?start=join_{code}"
+    event["invite_link"] = link
+    touch_event(event)
+    save_events()
+    return link
+
+
+def backfill_invite_links() -> None:
+    if not BOT_USERNAME:
+        return
+    changed = False
+    for event in EVENTS.values():
+        if event.get("invite_link") or not event.get("code"):
+            continue
+        event["invite_link"] = f"https://t.me/{BOT_USERNAME}?start=join_{event['code']}"
+        touch_event(event)
+        changed = True
+    if changed:
+        save_events()
+
+
+def format_invite_step_message(
+    event_number: Optional[int] = None,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+) -> str:
+    brief = (event or {}).get("brief") or {}
+    if event and not str(brief.get("trip_title") or "").strip():
+        brief_display.sync_trip_title(brief)
+    trip_title = brief_display.get_trip_title(brief) if brief else ""
+    trip_title_esc = html.escape(trip_title) if trip_title else ""
+    if trip_title_esc and trip_title != "Новая поездка":
+        if isinstance(event_number, int):
+            head = f"✨ <b>Бриф готов</b> · {trip_title_esc} <i>· #{event_number}</i>"
+        else:
+            head = f"✨ <b>Бриф готов</b> · {trip_title_esc}"
+    elif isinstance(event_number, int):
+        head = f"✨ <b>Бриф по #{event_number} готов</b>"
+    else:
+        head = "✨ <b>Бриф готов</b>"
     return (
-        f"✨ <b>Бриф по {label} готов</b>\n"
-        "Подключи участников — они допишут пожелания, я соберу всё в одну картину."
+        f"{head}\n\n"
+        "Нажми <b>📤 Поделиться приглашением</b> — выбери чат с участником.\n"
+        "В пересылке будет ссылка: в боте посмотрят, что уже собрано, "
+        "и допишут пожелания <b>одним сообщением</b>."
     )
 
 
@@ -757,12 +805,7 @@ def build_organizer_brief_reply_parts(
     )
     parts = [summary_text]
     if not missing:
-        variants = (
-            dialog_context.COMPLETE_VARIANTS_ORGANIZER
-            if flow_step == "organizer_dump"
-            else dialog_context.COMPLETE_VARIANTS_ORGANIZER_CLARIFY
-        )
-        parts.append(dialog_context.pick_variant(chat_id, variants))
+        # CTA «пригласить» — в отдельном сообщении send_next_step_after_brief
         return parts, True
 
     top_missing = dialog_context.prioritize_missing(missing)
@@ -1401,6 +1444,8 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 
 
 def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
+    if event:
+        ensure_event_invite_link(event)
     invite_link = (event or {}).get("invite_link") if event else None
     if invite_link:
         share_text = (
@@ -1742,9 +1787,11 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
     event_code = data.get("event_code")
     event = EVENTS.get(event_code) if event_code else None
 
+    if event:
+        ensure_event_invite_link(event)
     event_number = event.get("event_number") if event else None
     await message.answer(
-        format_invite_step_message(event_number),
+        format_invite_step_message(event_number, event=event),
         reply_markup=invite_ready_keyboard(event),
     )
     await log_session_action(
@@ -1759,8 +1806,13 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
 
 async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
     event = EVENTS.get(event_code) if event_code else None
+    if event:
+        ensure_event_invite_link(event)
     await message.answer(
-        format_invite_step_message(event.get("event_number") if event else None),
+        format_invite_step_message(
+            event.get("event_number") if event else None,
+            event=event,
+        ),
         reply_markup=invite_ready_keyboard(event),
     )
     await log_session_action(
@@ -1986,8 +2038,9 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
             reply_markup=main_menu_keyboard(),
         )
         return
+    ensure_event_invite_link(event)
     await callback.message.answer(
-        format_invite_step_message(event.get("event_number")),
+        format_invite_step_message(event.get("event_number"), event=event),
         reply_markup=invite_ready_keyboard(event),
     )
 
@@ -2136,17 +2189,22 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
             reply_markup=help_keyboard(),
         )
         return
-    if not snap.get("invite_ready"):
+    _event_code, event = await _organizer_event_from_state(state)
+    if event:
+        ensure_event_invite_link(event)
+    if not event or not event.get("invite_link"):
         await callback.message.answer(
             "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
             reply_markup=help_keyboard(),
         )
         return
     await callback.message.answer(
-        "Если участник не может войти:\n"
-        "1) попроси открыть ссылку заново\n"
-        "2) попроси отправить /start в боте\n"
-        "3) при необходимости нажми «📤 Поделиться приглашением» ещё раз.",
+        format_invite_step_message(event.get("event_number"), event=event),
+        reply_markup=invite_ready_keyboard(event),
+    )
+    await callback.message.answer(
+        "Если участник не может войти — попроси открыть ссылку из приглашения заново "
+        "или отправить /start в боте.",
         reply_markup=help_keyboard(),
     )
 
@@ -2517,6 +2575,8 @@ async def main() -> None:
                 wait_seconds,
             )
             await asyncio.sleep(wait_seconds)
+
+    backfill_invite_links()
 
     # Polling mode should not compete with webhooks.
     # If Telegram API is temporarily slow, do not block startup forever.

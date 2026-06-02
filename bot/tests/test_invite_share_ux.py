@@ -27,9 +27,21 @@ def test_invite_ready_keyboard_single_share_url_button(monkeypatch) -> None:
 
 def test_invite_step_message_short() -> None:
     text = main.format_invite_step_message(3)
-    assert "Бриф по #3 готов" in text
+    assert "#3" in text
+    assert "Поделиться приглашением" in text
+    assert "в боте" in text.lower()
     assert "Готово — ссылка" not in text
     assert "вручную в чате" not in text
+
+
+def test_invite_step_message_includes_trip_title() -> None:
+    event = {
+        "event_number": 1,
+        "brief": {"trip_title": "Во Францию с семьёй"},
+    }
+    text = main.format_invite_step_message(1, event=event)
+    assert "Во Францию с семьёй" in text
+    assert "Поделиться приглашением" in text
 
 
 def test_participant_join_keyboard(monkeypatch) -> None:
