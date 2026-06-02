@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-06-02-brief-restore-fix
+ENV BOT_UI_VERSION=2026-06-02-health-check
 
 WORKDIR /app
 

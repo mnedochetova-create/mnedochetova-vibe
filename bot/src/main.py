@@ -443,40 +443,32 @@ def _chat_id_matches(stored: Any, chat_id: int) -> bool:
         return stored == chat_id
 
 
-def get_latest_event_for_chat(chat_id: int) -> Optional[tuple[str, Dict[str, Any], str]]:
-    organizer_hits: list[tuple[str, Dict[str, Any]]] = []
+def get_latest_event_for_chat(
+    chat_id: int,
+    *,
+    preferred_organizer_code: Optional[str] = None,
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Та же политика выбора поездки организатора, что и resolve_organizer_event_code."""
+    organizer_code = resolve_organizer_event_code(chat_id, preferred_organizer_code)
+    if organizer_code and organizer_code in EVENTS:
+        return organizer_code, EVENTS[organizer_code], "organizer"
+
     participant_hits: list[tuple[str, Dict[str, Any]]] = []
     for code, event in EVENTS.items():
-        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
-            organizer_hits.append((code, event))
-            continue
         participants = event.get("participants") or {}
         if str(chat_id) in participants:
             participant_hits.append((code, event))
-
-    def pick_latest(items: list[tuple[str, Dict[str, Any]]]) -> Optional[tuple[str, Dict[str, Any]]]:
-        if not items:
-            return None
-        items.sort(
-            key=lambda x: (
-                brief_parser.brief_completeness_score(x[1].get("brief") or {}),
-                x[1].get("updated_at", x[1].get("created_at", 0)),
-            ),
-            reverse=True,
-        )
-        return items[0]
-
-    latest_organizer = pick_latest(organizer_hits)
-    if latest_organizer:
-        code, event = latest_organizer
-        return code, event, "organizer"
-
-    latest_participant = pick_latest(participant_hits)
-    if latest_participant:
-        code, event = latest_participant
-        return code, event, "participant"
-
-    return None
+    if not participant_hits:
+        return None
+    participant_hits.sort(
+        key=lambda x: (
+            x[1].get("updated_at", x[1].get("created_at", 0)),
+            brief_parser.brief_completeness_score(x[1].get("brief") or {}),
+        ),
+        reverse=True,
+    )
+    code, event = participant_hits[0]
+    return code, event, "participant"
 
 
 def text_looks_like_brief_submission(text: str) -> bool:
@@ -489,20 +481,10 @@ def text_looks_like_brief_submission(text: str) -> bool:
 
 
 def pick_best_organizer_event(chat_id: int) -> Optional[tuple[str, Dict[str, Any]]]:
-    hits: list[tuple[str, Dict[str, Any]]] = []
-    for code, event in EVENTS.items():
-        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
-            hits.append((code, event))
-    if not hits:
+    code = resolve_organizer_event_code(chat_id, None)
+    if not code:
         return None
-    hits.sort(
-        key=lambda x: (
-            brief_parser.brief_completeness_score(x[1].get("brief") or {}),
-            x[1].get("updated_at", x[1].get("created_at", 0)),
-        ),
-        reverse=True,
-    )
-    return hits[0]
+    return code, EVENTS[code]
 
 
 def resolve_organizer_event_code(chat_id: int, preferred_code: Optional[str] = None) -> Optional[str]:
@@ -551,7 +533,7 @@ async def resolve_organizer_event_and_brief(
 
 async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str:
     event = EVENTS.get(event_code) or {}
-    brief = event.get("brief") or {}
+    brief = brief_parser.restore_organizer_brief_from_event(event)
     if not event.get("organizer_dump") and not brief:
         flow_step = "organizer_dump"
         await state.set_state(FlowState.organizer_dump)
@@ -612,21 +594,6 @@ async def handle_menu_shortcuts(message: Message, state: Optional[FSMContext] = 
     return False
 
 
-def extract_brief_rule_based(text: str) -> Dict[str, Any]:
-    return brief_parser.extract_brief_rule_based(text)
-
-
-def extract_brief_from_text(
-    text: str,
-    *,
-    role: str = "organizer",
-    participant_name: str = "",
-) -> Dict[str, Any]:
-    return brief_parser.extract_brief_from_text(
-        text, role=role, participant_name=participant_name
-    )
-
-
 def parse_message_to_brief(
     text: str,
     *,
@@ -682,10 +649,6 @@ async def emit_parse_log(
         merged_brief=brief,
         parser_mode=brief_parser.get_last_parser_mode(),
     )
-
-
-def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
-    return brief_parser.merge_brief(base, incoming)
 
 
 def merge_participant_into_brief(
@@ -952,11 +915,15 @@ async def handle_organizer_conversation(
     change_info = {"added_fields": [], "updated_fields": []}
     if brief_updated:
         previous_brief = dict(brief)
+        event = EVENTS.get(event_code, {}) if event_code else {}
+        has_prior_dump = isinstance(event.get("organizer_dump"), str) and bool(
+            event.get("organizer_dump", "").strip()
+        )
         brief = brief_parser.merge_organizer_incoming(
             brief,
             incoming,
-            flow_step="organizer_clarify",
-            has_prior_dump=True,
+            flow_step=flow_step,
+            has_prior_dump=has_prior_dump,
         )
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
         if event_code and event_code in EVENTS:
@@ -1068,6 +1035,7 @@ async def route_organizer_text_message(
         role="organizer",
         flow_step=flow_step,
     )
+    # На шагах брифа любой фактический ввод идёт в парсер (не в живой диалог).
     if flow_step in {"organizer_dump", "organizer_clarify"}:
         text_stripped = (message.text or "").strip()
         if text_stripped and intent == "conversation":
@@ -1140,8 +1108,14 @@ async def handle_participant_brief_input(
     missing = missing_brief_fields(updated_brief)
     missing_block = ""
     if missing:
-        missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
-        missing_block = "\n\n🚨 <b>Нужно уточнить</b>\n" f"{missing_text}"
+        top_missing = dialog_context.prioritize_missing(missing)
+        missing_text = "\n".join(f"• {html.escape(item)}" for item in top_missing)
+        extra = ""
+        if len(missing) > len(top_missing):
+            extra = (
+                f"\n<i>И ещё {len(missing) - len(top_missing)} пункт(а).</i>"
+            )
+        missing_block = "\n\n🚨 <b>Нужно уточнить</b>\n" f"{missing_text}{extra}"
     brief_html = format_brief_for_participant(updated_brief, event_number=event_number)
     await emit_parse_log(
         message.bot,
@@ -1597,14 +1571,26 @@ def help_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def context_snapshot(chat_id: int, fsm_state: Optional[str]) -> Dict[str, Any]:
-    recovered = get_latest_event_for_chat(chat_id)
+def context_snapshot(
+    chat_id: int,
+    fsm_state: Optional[str],
+    *,
+    preferred_event_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    recovered = get_latest_event_for_chat(
+        chat_id,
+        preferred_organizer_code=preferred_event_code,
+    )
     if not recovered:
         return {
             "has_event": False,
             "state": fsm_state or "не определено",
         }
     event_code, event, role = recovered
+    if role == "organizer":
+        brief = brief_parser.restore_organizer_brief_from_event(event)
+    else:
+        brief = event.get("brief") or {}
     return {
         "has_event": True,
         "event_code": event_code,
@@ -1612,7 +1598,7 @@ def context_snapshot(chat_id: int, fsm_state: Optional[str]) -> Dict[str, Any]:
         "role": role,
         "state": fsm_state or "не определено",
         "invite_ready": bool(event.get("invite_link")),
-        "missing_fields": missing_brief_fields(event.get("brief") or {}),
+        "missing_fields": missing_brief_fields(brief),
     }
 
 
@@ -1630,7 +1616,12 @@ async def start_handler(message: Message, state: Optional[FSMContext] = None) ->
 async def help_handler(message: Message, state: Optional[FSMContext] = None) -> None:
     logging.info("Received /help from chat_id=%s", message.chat.id)
     fsm_state = await state.get_state() if state is not None else None
-    snap = context_snapshot(message.chat.id, fsm_state)
+    preferred_code = None
+    if state is not None:
+        data = await state.get_data()
+        raw = data.get("event_code")
+        preferred_code = raw if isinstance(raw, str) else None
+    snap = context_snapshot(message.chat.id, fsm_state, preferred_event_code=preferred_code)
     if snap.get("has_event"):
         event_number = snap.get("event_number")
         event_label = f"#{event_number}" if isinstance(event_number, int) else "без номера"
@@ -1863,11 +1854,6 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
     await show_organizer_invite_step(message, state)
 
 
-async def send_next_step_after_brief_by_event(message: Message, event_code: str) -> None:
-    event = EVENTS.get(event_code) if event_code else None
-    await show_organizer_invite_step(message, state, event=event, event_code=event_code)
-
-
 async def event_create_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     logging.info("Event create clicked chat_id=%s", callback.message.chat.id)
     await callback.answer()
@@ -1892,9 +1878,9 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
         await callback.message.answer("У вас нет доступа к этому событию.")
         return
 
-    brief = event.get("brief") or {}
     event_number = event.get("event_number")
     if is_organizer:
+        brief = brief_parser.restore_organizer_brief_from_event(event)
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
         missing = missing_brief_fields(brief)
@@ -1914,6 +1900,7 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
             )
         return
 
+    brief = event.get("brief") or {}
     participant_name = (
         callback.from_user.full_name if callback.from_user else str(chat_id)
     )
@@ -2110,7 +2097,11 @@ async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMC
     event_code = data.get("event_code")
     role = data.get("role") or "organizer"
     if not event_code:
-        recovered = get_latest_event_for_chat(callback.message.chat.id)
+        preferred = data.get("event_code")
+        recovered = get_latest_event_for_chat(
+            callback.message.chat.id,
+            preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+        )
         if not recovered:
             await callback.message.answer("Пока нет активного брифа. Создай поездку через «✨ Новая поездка».")
             return
@@ -2120,7 +2111,10 @@ async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMC
     if not event:
         await callback.message.answer("Поездка не найдена.")
         return
-    brief = event.get("brief") or {}
+    if role == "organizer":
+        brief = brief_parser.restore_organizer_brief_from_event(event)
+    else:
+        brief = event.get("brief") or {}
     event_number = event.get("event_number")
     if role == "participant":
         body = format_brief_for_participant(brief, event_number=event_number)
@@ -2130,7 +2124,12 @@ async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMC
 
 
 async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: Optional[Any] = None) -> None:
-    recovered = get_latest_event_for_chat(message.chat.id)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    recovered = get_latest_event_for_chat(
+        message.chat.id,
+        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+    )
     if not recovered:
         await message.answer(
             "Пока не вижу активной поездки. Создай новую кнопкой «✨ Новая поездка» или через /start.",
@@ -2138,15 +2137,12 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
         )
         return
     event_code, event, role = recovered
-    brief = event.get("brief") or {}
     event_number = event.get("event_number")
     if role == "organizer":
+        brief = brief_parser.restore_organizer_brief_from_event(event)
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         missing = missing_brief_fields(brief)
-        if missing:
-            await state.set_state(FlowState.organizer_clarify)
-        else:
-            await state.set_state(FlowState.organizer_clarify)
+        await state.set_state(FlowState.organizer_clarify)
         await message.answer(
             f"📂 <b>Поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
             f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
@@ -2156,6 +2152,7 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
         if not missing and event.get("invite_link"):
             await show_organizer_invite_step(message, state, event=event, event_code=event_code)
         return
+    brief = event.get("brief") or {}
     participant_name = from_user.full_name if from_user and getattr(from_user, "full_name", None) else str(message.chat.id)
     await state.update_data(role="participant", event_code=event_code, participant_name=participant_name)
     await state.set_state(FlowState.participant_contribute)
@@ -2193,7 +2190,13 @@ async def help_parser_callback_handler(callback: CallbackQuery) -> None:
 async def help_clarify_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     fsm_state = await state.get_state()
-    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    snap = context_snapshot(
+        callback.message.chat.id,
+        fsm_state,
+        preferred_event_code=preferred if isinstance(preferred, str) else None,
+    )
     missing = snap.get("missing_fields") or []
     if not missing:
         await callback.message.answer(
@@ -2201,7 +2204,10 @@ async def help_clarify_callback_handler(callback: CallbackQuery, state: FSMConte
             reply_markup=help_keyboard(),
         )
         return
-    missing_text = "\n".join(f"• {html.escape(item)}" for item in missing)
+    top_missing = dialog_context.prioritize_missing(missing)
+    missing_text = "\n".join(f"• {html.escape(item)}" for item in top_missing)
+    if len(missing) > len(top_missing):
+        missing_text += f"\n<i>И ещё {len(missing) - len(top_missing)} пункт(а).</i>"
     await callback.message.answer(
         "❓ <b>Почему я прошу уточнение</b>\n"
         "Эти пункты нужны, чтобы не ошибиться в итоговом брифе:\n"
@@ -2214,7 +2220,13 @@ async def help_clarify_callback_handler(callback: CallbackQuery, state: FSMConte
 async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     fsm_state = await state.get_state()
-    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    snap = context_snapshot(
+        callback.message.chat.id,
+        fsm_state,
+        preferred_event_code=preferred if isinstance(preferred, str) else None,
+    )
     if not snap.get("has_event"):
         await callback.message.answer(
             "Сначала создай поездку — тогда появится ссылка для участников.",
@@ -2248,7 +2260,13 @@ async def help_my_events_callback_handler(callback: CallbackQuery, state: FSMCon
 async def help_report_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     fsm_state = await state.get_state()
-    snap = context_snapshot(callback.message.chat.id, fsm_state)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    snap = context_snapshot(
+        callback.message.chat.id,
+        fsm_state,
+        preferred_event_code=preferred if isinstance(preferred, str) else None,
+    )
     if snap.get("has_event"):
         event_number = snap.get("event_number")
         role = "организатор" if snap.get("role") == "organizer" else "участник"
@@ -2277,11 +2295,12 @@ async def role_callback_handler(callback: CallbackQuery, state: FSMContext) -> N
 
     if data == "role:organizer":
         await state.update_data(role="organizer")
-        had_event = pick_best_organizer_event(callback.message.chat.id) is not None
-        event_code = await bootstrap_organizer_event(callback.message, state)
-        if had_event:
+        existing_code = resolve_organizer_event_code(callback.message.chat.id, None)
+        if existing_code:
+            await restore_organizer_fsm_state(state, existing_code)
             await resume_latest_trip(callback.message, state, from_user=callback.from_user)
             return
+        event_code = await bootstrap_organizer_event(callback.message, state)
         event_number = (EVENTS.get(event_code) or {}).get("event_number")
         await callback.message.answer(
             format_trip_created_organizer_message(event_number),
@@ -2466,7 +2485,12 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
     if await handle_menu_shortcuts(message, state):
         return
 
-    recovered = get_latest_event_for_chat(message.chat.id)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    recovered = get_latest_event_for_chat(
+        message.chat.id,
+        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+    )
     if recovered:
         event_code, event, role = recovered
         if role == "organizer":
