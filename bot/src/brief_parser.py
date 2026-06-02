@@ -767,13 +767,22 @@ def extract_brief_from_text(
     return flat
 
 
+def organizer_core_brief_ok(brief: Dict[str, Any]) -> bool:
+    """Базовый бриф собран: состав, даты и бюджет (не только перелёт/сценарий)."""
+    has_party = bool(brief.get("adults") or brief.get("kids_count"))
+    has_dates = bool(brief.get("months") or brief.get("date_range_raw"))
+    return has_party and has_dates and budget_is_set(brief)
+
+
 def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Если brief в storage обнулился, восстановить из organizer_dump."""
+    """Если brief в storage обнулился или без ядра — восстановить из organizer_dump."""
     brief = dict(event.get("brief") or {})
-    if brief_completeness_score(brief) >= 4:
-        return brief
     dump_text = event.get("organizer_dump")
-    if isinstance(dump_text, str) and dump_text.strip():
+    has_dump = isinstance(dump_text, str) and bool(dump_text.strip())
+    if organizer_core_brief_ok(brief) and brief_completeness_score(brief) >= 4:
+        brief_display.sync_trip_title(brief)
+        return brief
+    if has_dump:
         from_dump = extract_brief_from_text(dump_text)
         brief = merge_brief(from_dump, brief)
     brief_display.sync_trip_title(brief)

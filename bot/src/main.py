@@ -906,6 +906,17 @@ async def handle_organizer_brief_input(
         brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
             message, state, flow_step=flow_step
         )
+    parts, is_complete = build_organizer_brief_reply_parts(
+        brief,
+        flow_step=flow_step,
+        event_number=event_number,
+        chat_id=message.chat.id,
+        missing=missing,
+    )
+    body = "\n\n".join(parts)
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+
     summary_text = format_brief_update_message(
         brief, event_number=event_number, missing=missing
     )
@@ -921,17 +932,6 @@ async def handle_organizer_brief_input(
         missing=missing,
         brief_html=summary_text,
     )
-
-    parts, is_complete = build_organizer_brief_reply_parts(
-        brief,
-        flow_step=flow_step,
-        event_number=event_number,
-        chat_id=message.chat.id,
-        missing=missing,
-    )
-    body = "\n\n".join(parts)
-    await message.answer(body, reply_markup=main_menu_keyboard())
-    await save_dialog_turn(state, bot_text=body)
     if is_complete:
         await send_next_step_after_brief(message, state)
 

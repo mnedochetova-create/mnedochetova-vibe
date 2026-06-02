@@ -38,6 +38,20 @@ def test_restore_brief_from_organizer_dump() -> None:
     assert restored.get("budget_rub_max") == 1_000_000
 
 
+def test_restore_merges_dump_when_core_missing_despite_high_score() -> None:
+    dump = "семья 2 взрослых, июль, бюджет 300к"
+    brief = {
+        "months": ["июл"],
+        "budget_rub_max": 300_000,
+        "transfers_allowed": True,
+        "flight_preferences": ["эконом"],
+    }
+    event = {"brief": brief, "organizer_dump": dump}
+    restored = brief_parser.restore_organizer_brief_from_event(event)
+    assert restored.get("adults") == 2
+    assert restored.get("budget_rub_max") == 300_000
+
+
 def test_merge_brief_clarify_keeps_base() -> None:
     base = {
         "adults": 7,
