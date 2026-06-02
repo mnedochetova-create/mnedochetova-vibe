@@ -38,6 +38,7 @@ import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
 import brief_display
+import ui_feedback
 
 
 format_budget_display = brief_display.format_budget_display
@@ -175,9 +176,8 @@ def build_invite_share_text(
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
     body = (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
-        "Организатор собрал базовый бриф — присоединяйся по ссылке, "
-        "посмотри в боте, что уже собрано, и допиши одним сообщением, "
-        "что важно лично тебе."
+        "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
+        "и допиши одним сообщением, что важно лично тебе."
     )
     if include_link:
         return f"{body}\n\n{invite_link}"
@@ -198,15 +198,16 @@ def invite_share_text_for_event(
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Открывает выбор чата/контакта для пересылки (кнопка с url=)."""
-    text = share_text if share_text is not None else build_invite_share_text(invite_link)
-    if invite_link and invite_link in text:
-        text = text.replace(invite_link, "").strip()
-        text = text.rstrip("\n")
-    return (
-        "https://t.me/share/url?"
-        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
-    )
+    """Открывает выбор чата/контакта для пересылки (кнопка с url=).
+
+    Только параметр text: сначала текст приглашения, ссылка — в конце одной строкой.
+    Без url=, иначе Telegram ставит сырую ссылку первой строкой сообщения.
+    """
+    prose = (share_text or build_invite_share_text(invite_link)).strip()
+    if invite_link and invite_link in prose:
+        prose = prose.replace(invite_link, "").strip().rstrip("\n")
+    text = f"{prose}\n\n{invite_link}"
+    return f"https://t.me/share/url?text={quote(text, safe='')}"
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -787,11 +788,8 @@ async def answer_live_text(
     context: Dict[str, Any],
     fallback_text: str,
 ) -> str:
-    try:
-        await message.bot.send_chat_action(message.chat.id, "typing")
-    except Exception as err:
-        logging.debug("typing action skipped: %s", err)
-    return live_text_or_fallback(context, fallback_text)
+    async with ui_feedback.thinking(message):
+        return live_text_or_fallback(context, fallback_text)
 
 
 STATIC_CLARIFY_HEADER_DUMP = "🚨 <b>Уточните только это</b> (можно одним сообщением):"
@@ -887,9 +885,10 @@ async def handle_organizer_brief_input(
 ) -> None:
     text = message.text or ""
     await save_dialog_turn(state, user_text=text)
-    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
-        message, state, flow_step=flow_step
-    )
+    async with ui_feedback.thinking(message):
+        brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+            message, state, flow_step=flow_step
+        )
     summary_text = format_brief_update_message(
         brief, event_number=event_number, missing=missing
     )
@@ -1084,38 +1083,39 @@ async def handle_participant_brief_input(
     participant_name = data.get("participant_name") or (
         message.from_user.full_name if message.from_user else str(message.chat.id)
     )
-    incoming, structured = parse_message_to_brief(
-        message.text or "",
-        role="participant",
-        participant_name=participant_name,
-    )
-    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
-    change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
-    merger_conflicts: List[str] = list(base_brief.get("group_conflicts") or [])
-    if structured:
-        participant_inputs = event.get("participant_inputs_structured") or []
-        event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
-            participant_inputs,
-            structured,
+    async with ui_feedback.thinking(message):
+        incoming, structured = parse_message_to_brief(
+            message.text or "",
+            role="participant",
+            participant_name=participant_name,
         )
-        merger_conflicts = run_group_merger_for_event(event)
-        if merger_conflicts:
-            updated_brief["group_conflicts"] = merger_conflicts
-    event["brief"] = updated_brief
+        updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+        change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+        merger_conflicts: List[str] = list(base_brief.get("group_conflicts") or [])
+        if structured:
+            participant_inputs = event.get("participant_inputs_structured") or []
+            event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
+                participant_inputs,
+                structured,
+            )
+            merger_conflicts = run_group_merger_for_event(event)
+            if merger_conflicts:
+                updated_brief["group_conflicts"] = merger_conflicts
+        event["brief"] = updated_brief
 
-    updates = event.setdefault("participant_updates", {})
-    updates[chat_key(message.chat.id)] = {
-        "text": message.text or "",
-        "confirmed": False,
-        "name": participant_name,
-        "username": (message.from_user.username if message.from_user else None),
-        "updated_at": now_ts(),
-    }
-    participants = event.setdefault("participants", {})
-    if str(message.chat.id) in participants:
-        participants[str(message.chat.id)]["updated_at"] = now_ts()
-    touch_event(event)
-    save_events()
+        updates = event.setdefault("participant_updates", {})
+        updates[chat_key(message.chat.id)] = {
+            "text": message.text or "",
+            "confirmed": False,
+            "name": participant_name,
+            "username": (message.from_user.username if message.from_user else None),
+            "updated_at": now_ts(),
+        }
+        participants = event.setdefault("participants", {})
+        if str(message.chat.id) in participants:
+            participants[str(message.chat.id)]["updated_at"] = now_ts()
+        touch_event(event)
+        save_events()
 
     await state.set_state(FlowState.participant_confirm)
     missing = missing_brief_fields(updated_brief)
@@ -1472,6 +1472,12 @@ def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeybo
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Поделиться приглашением", url=share_url)],
+                [
+                    InlineKeyboardButton(
+                        text="✅ Приглашение отправлено",
+                        callback_data="event:invite_sent",
+                    )
+                ],
             ]
         )
     return InlineKeyboardMarkup(
@@ -2067,10 +2073,10 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
 
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
+    await callback.answer("✅")
     _event_code, event = await _organizer_event_from_state(state)
-    await callback.message.answer(
-        "⏳ Ждём ответы участников — обновлю бриф, когда кто-то допишет пожелания.",
+    await ui_feedback.play_invite_sent_success(
+        callback.message,
         reply_markup=invite_waiting_keyboard(event),
     )
 
@@ -2588,6 +2594,7 @@ async def main() -> None:
             await asyncio.sleep(wait_seconds)
 
     backfill_invite_links()
+    await ui_feedback.cache_bot_logo_file_id(bot)
 
     # Polling mode should not compete with webhooks.
     # If Telegram API is temporarily slow, do not block startup forever.

@@ -15,7 +15,7 @@ def test_invite_ready_keyboard_single_share_url_button(monkeypatch) -> None:
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     event = {"invite_link": "https://t.me/MyTravelLabBot?start=join_abc123"}
     kb = main.invite_ready_keyboard(event)
-    assert len(kb.inline_keyboard) == 1
+    assert len(kb.inline_keyboard) == 2
     assert len(kb.inline_keyboard[0]) == 1
     btn = kb.inline_keyboard[0][0]
     assert btn.text == "📤 Поделиться приглашением"
@@ -23,6 +23,8 @@ def test_invite_ready_keyboard_single_share_url_button(monkeypatch) -> None:
     assert btn.url.startswith("https://t.me/share/url?")
     assert "join_abc123" in btn.url
     assert btn.callback_data is None
+    sent_btn = kb.inline_keyboard[1][0]
+    assert sent_btn.callback_data == "event:invite_sent"
 
 
 def test_invite_step_message_short() -> None:
@@ -80,15 +82,15 @@ def test_invite_share_text_for_event_uses_trip_title() -> None:
     assert "join_abc" not in text
 
 
-def test_telegram_share_url_has_single_link(monkeypatch) -> None:
-    from urllib.parse import parse_qs, urlparse, unquote
+def test_telegram_share_url_has_single_link_at_end() -> None:
+    from urllib.parse import parse_qs, unquote, urlparse
 
-    monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     link = "https://t.me/MyTravelLabBot?start=join_abc123"
     event = {"invite_link": link, "brief": {"trip_title": "Во Францию с семьёй"}}
     share_url = main.telegram_share_url(link, share_text=main.invite_share_text_for_event(event))
     query = parse_qs(urlparse(share_url).query)
-    assert query["url"][0] == link
+    assert "url" not in query
     text = unquote(query["text"][0])
-    assert link not in text
+    assert text.index("Привет") < text.index(link)
+    assert text.count(link) == 1
     assert "Во Францию с семьёй" in text
