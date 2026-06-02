@@ -41,7 +41,9 @@
 - `context_raw` (`string`) — исходный текст пользователя (всегда сохраняется).
 - `budget_rub_max` (`int`) — верхняя граница бюджета в рублях.
 - `budget_eur_max` (`int`) — бюджет в евро, если указан явно.
-- `budget_currency` (`string`) — `EUR` при бюджете в евро.
+- `budget_amount_max` (`int`) — сумма при бюджете в иностранной валюте (USD, GBP, TRY, AED и т.д.).
+- `budget_currency` (`string`) — код валюты (`EUR`, `USD`, …) при `budget_amount_max` или валютных полях `budget_*_max`.
+- `budget_usd_max`, `budget_gbp_max`, … (`int`) — валютные алиасы из rule-based парсера.
 - `budget_rub_min` (`int`) — нижняя граница при диапазоне («400–600к»).
 - `budget_flexible` (`bool`) — бюджет без жёсткой суммы («гибкий»).
 - `flight_preferences` (`string[]`) — класс/формат перелёта (эконом, бизнес и т.п.).

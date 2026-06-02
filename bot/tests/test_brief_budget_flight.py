@@ -9,6 +9,15 @@ if str(SRC_DIR) not in sys.path:
 import brief_parser  # noqa: E402
 
 
+def test_usd_budget_not_in_missing() -> None:
+    text = "2 взрослых, июль, Турция, бюджет до 5000 долларов, море"
+    brief = brief_parser.extract_brief_from_text(text)
+    missing = brief_parser.missing_brief_fields(brief)
+    assert brief_parser.budget_is_set(brief)
+    assert brief.get("budget_currency") == "USD"
+    assert not any(m.startswith("Бюджет") for m in missing)
+
+
 def test_budget_flexible_closes_missing() -> None:
     brief = brief_parser.extract_brief_from_text("Турция, июнь, бюджет гибкий, 2 взрослых")
     assert brief.get("budget_flexible") is True

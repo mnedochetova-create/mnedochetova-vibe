@@ -460,6 +460,31 @@ def _is_empty_brief_value(value: Any) -> bool:
     return False
 
 
+def budget_is_set(brief: Dict[str, Any]) -> bool:
+    """Любая явно зафиксированная сумма или «бюджет гибкий» (P1)."""
+    if brief.get("budget_flexible"):
+        return True
+    if brief.get("budget_rub_max") or brief.get("budget_rub_min"):
+        return True
+    if brief.get("budget_eur_max") or brief.get("budget_amount_max"):
+        return True
+    currency = (brief.get("budget_currency") or "").strip().upper()
+    if currency:
+        keyed = f"budget_{currency.lower()}_max"
+        if brief.get(keyed):
+            return True
+    for key, value in (brief or {}).items():
+        if (
+            key.startswith("budget_")
+            and key.endswith("_max")
+            and key not in {"budget_rub_max", "budget_eur_max", "budget_amount_max"}
+            and isinstance(value, int)
+            and value > 0
+        ):
+            return True
+    return False
+
+
 def brief_completeness_score(brief: Dict[str, Any]) -> int:
     if not brief:
         return 0
@@ -468,12 +493,7 @@ def brief_completeness_score(brief: Dict[str, Any]) -> int:
         score += 3
     elif brief.get("trip_duration_days_raw"):
         score += 1
-    if (
-        brief.get("budget_rub_max")
-        or brief.get("budget_eur_max")
-        or brief.get("budget_amount_max")
-        or brief.get("budget_flexible")
-    ):
+    if budget_is_set(brief):
         score += 3
     if brief.get("adults") or brief.get("kids_count"):
         score += 3
@@ -623,13 +643,8 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     missing: list[str] = []
     if not brief.get("months") and not brief.get("date_range_raw"):
         missing.append("Окна дат (месяц/период) или гибкость")
-    budget_ok = (
-        bool(brief.get("budget_rub_max"))
-        or bool(brief.get("budget_eur_max"))
-        or bool(brief.get("budget_flexible"))
-    )
-    if not budget_ok:
-        missing.append("Бюджет (хотя бы «до … ₽/€» или «бюджет гибкий»)")
+    if not budget_is_set(brief):
+        missing.append("Бюджет (хотя бы «до … ₽/€/$» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
     flight_block_ok = (
