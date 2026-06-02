@@ -57,11 +57,12 @@ personal_facts может содержать:
 
 personal_preferences может содержать:
 
+- stay_experience: object — личный сценарий (setting, accommodation_style, trip_style, season_note) — см. organizer prompt, блок stay_experience
 - destination: object
-- climate: object
+- climate: object — только при явном «климат» / «погода»
 - trip_type: object
-- location_preferences: object
-- accommodation_preferences: object
+- location_preferences: object → setting
+- accommodation_preferences: object → accommodation_style
 - activity_preferences: object
 - food_preferences: object
 - pace_preferences: object

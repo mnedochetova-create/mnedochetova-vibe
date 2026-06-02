@@ -1,5 +1,6 @@
 """Маппинг structured JSON (organizer/participant parser) → плоский бриф PARSING_SPEC."""
 
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -80,6 +81,116 @@ def _map_months(section: Dict[str, Any], out: Dict[str, Any]) -> None:
         out["months"] = months
 
 
+def _values_to_string_list(raw: Any) -> List[str]:
+    """Строка, список или объект LLM → список коротких меток."""
+    val = _unwrap(raw)
+    if _is_empty(val):
+        return []
+    if isinstance(val, str):
+        text = val.strip()
+        return [text] if text else []
+    if isinstance(val, list):
+        out: List[str] = []
+        for item in val:
+            out.extend(_values_to_string_list(item))
+        return out
+    if isinstance(val, dict):
+        out: List[str] = []
+        for key in (
+            "setting",
+            "accommodation_style",
+            "trip_style",
+            "regions",
+            "cities",
+            "landscape",
+            "locations",
+            "styles",
+            "types",
+            "items",
+            "values",
+        ):
+            if key in val:
+                out.extend(_values_to_string_list(val[key]))
+        for key in ("name", "country", "region", "label", "destination", "description", "city"):
+            part = val.get(key)
+            if part and not _is_empty(part):
+                out.append(str(_unwrap(part) if isinstance(part, dict) else part).strip())
+        if not out:
+            for part in val.values():
+                if isinstance(part, str) and part.strip():
+                    out.append(part.strip())
+        return out
+    text = str(val).strip()
+    return [text] if text else []
+
+
+def _merge_stay_list_field(se: Dict[str, Any], field: str, items: List[str]) -> None:
+    if not items:
+        return
+    se.setdefault(field, [])
+    _append_unique_strings(se[field], items)
+
+
+def _map_stay_experience(
+    preferences: Optional[Dict[str, Any]],
+    facts: Optional[Dict[str, Any]],
+    out: Dict[str, Any],
+) -> None:
+    """location/accommodation/climate → stay_experience (этап 3, LLM → flat)."""
+    prefs = preferences if isinstance(preferences, dict) else {}
+    fact_section = facts if isinstance(facts, dict) else {}
+    se: Dict[str, Any] = dict(out.get("stay_experience") or {})
+
+    direct = prefs.get("stay_experience")
+    if direct is not None:
+        node = _unwrap(direct)
+        if isinstance(node, dict):
+            for field in ("setting", "accommodation_style", "trip_style"):
+                _merge_stay_list_field(se, field, _values_to_string_list(node.get(field)))
+            season = node.get("season_note")
+            if season is not None:
+                season_val = _unwrap(season) if isinstance(season, dict) else season
+                if not _is_empty(season_val):
+                    se["season_note"] = str(season_val).strip()
+
+    if prefs.get("location_preferences") is not None:
+        _merge_stay_list_field(se, "setting", _values_to_string_list(prefs["location_preferences"]))
+
+    if prefs.get("accommodation_preferences") is not None:
+        _merge_stay_list_field(
+            se,
+            "accommodation_style",
+            _values_to_string_list(prefs["accommodation_preferences"]),
+        )
+
+    if prefs.get("pace_preferences") is not None:
+        _merge_stay_list_field(se, "trip_style", _values_to_string_list(prefs["pace_preferences"]))
+
+    climate = _unwrap(prefs.get("climate"))
+    if isinstance(climate, str) and climate.strip():
+        for part in re.split(r"[/,]| и ", climate):
+            piece = part.strip()
+            if piece:
+                _merge_stay_list_field(se, "setting", [piece])
+
+    trip_type = prefs.get("trip_type")
+    if trip_type is not None:
+        _merge_stay_list_field(se, "trip_style", _values_to_string_list(trip_type))
+
+    dest_label = _direction_label(fact_section.get("destination")) or _direction_label(
+        prefs.get("destination")
+    )
+    if dest_label:
+        _merge_stay_list_field(se, "setting", [dest_label])
+
+    dest_raw = fact_section.get("destination_raw")
+    if dest_raw is not None:
+        _merge_stay_list_field(se, "setting", _values_to_string_list(dest_raw))
+
+    if se:
+        out["stay_experience"] = se
+
+
 def _map_documents(section: Optional[Dict[str, Any]], out: Dict[str, Any]) -> None:
     if not isinstance(section, dict):
         return
@@ -115,11 +226,8 @@ def _map_activity_and_constraints(
     activities: List[str] = []
     for key in (
         "activity_preferences",
-        "location_preferences",
-        "accommodation_preferences",
         "food_preferences",
         "additional_wishes",
-        "pace_preferences",
         "children_needs",
     ):
         if key in prefs:
@@ -152,6 +260,14 @@ def _map_activity_and_constraints(
     if activities:
         out.setdefault("activity_preferences", [])
         _append_unique_strings(out["activity_preferences"], activities)
+
+
+def _map_preferences_tail(
+    preferences: Optional[Dict[str, Any]],
+    facts: Optional[Dict[str, Any]],
+    out: Dict[str, Any],
+) -> None:
+    _map_stay_experience(preferences, facts, out)
 
 
 def organizer_structured_to_flat(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,7 +321,9 @@ def organizer_structured_to_flat(data: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault("activity_preferences", [])
         _append_unique_strings(out["activity_preferences"], _unwrap(dest_raw))
 
-    _map_activity_and_constraints(data.get("preferences"), data.get("constraints"), out)
+    prefs = data.get("preferences")
+    _map_activity_and_constraints(prefs, data.get("constraints"), out)
+    _map_preferences_tail(prefs, facts, out)
     _map_documents(data.get("documents"), out)
 
     return out
@@ -258,6 +376,7 @@ def participant_structured_to_flat(data: Dict[str, Any]) -> Dict[str, Any]:
             out["activity_preferences"].append(pref)
 
     _map_activity_and_constraints(prefs, cons, out)
+    _map_preferences_tail(prefs, facts, out)
     _map_documents(data.get("documents"), out)
 
     return out

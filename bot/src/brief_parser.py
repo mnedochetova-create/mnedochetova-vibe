@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import brief_flat_mapper
 import brief_pipeline
+import brief_stay_enrich
 from parser_mode import role_llm_active
 
 
@@ -14,23 +15,7 @@ def get_last_parser_mode() -> str:
     return LAST_PARSER_MODE
 
 
-# (stem in lowercased text, display name, default climate if user discusses weather/climate)
-_DESTINATION_HINTS: List[Tuple[str, str, str]] = [
-    ("грец", "Греция", "море/пляж"),
-    ("турц", "Турция", "море/пляж"),
-    ("кипр", "Кипр", "море/пляж"),
-    ("испан", "Испания", "море/пляж"),
-    ("итали", "Италия", "море/пляж"),
-    ("хорват", "Хорватия", "море/пляж"),
-    ("черногор", "Черногория", "море/пляж"),
-    ("болгар", "Болгария", "море/пляж"),
-    ("египет", "Египет", "море/пляж"),
-    ("таиланд", "Таиланд", "море/пляж"),
-    ("вьетнам", "Вьетнам", "море/пляж"),
-    ("оаэ", "ОАЭ", "море/пляж"),
-    ("дубай", "ОАЭ", "море/пляж"),
-    ("мальдив", "Мальдивы", "море/пляж"),
-]
+_DESTINATION_HINTS = brief_stay_enrich.DESTINATION_HINTS
 
 _MONTH_PATTERN = (
     r"январ[ья]?|феврал[ья]?|март[а]?|апрел[ья]?|ма[йя]|июн[ья]?|июл[ья]?|"
@@ -39,13 +24,32 @@ _MONTH_PATTERN = (
 
 
 def _detect_destinations(t: str) -> List[Tuple[str, str]]:
-    found: List[Tuple[str, str]] = []
-    seen: set[str] = set()
-    for stem, name, default_climate in _DESTINATION_HINTS:
-        if stem in t and name not in seen:
-            found.append((name, default_climate))
-            seen.add(name)
-    return found
+    return brief_stay_enrich._detect_destinations(t)
+
+
+def _detect_cities(t: str) -> List[Tuple[str, List[str]]]:
+    return brief_stay_enrich._detect_cities(t)
+
+
+def _money_to_rub(num: int, suffix: str) -> int:
+    suffix = (suffix or "").strip()
+    if suffix in {"к", "т", "тыс", "тысяч"}:
+        num *= 1000
+    elif suffix.startswith("млн") or suffix.startswith("миллион"):
+        num *= 1_000_000
+    elif not suffix and num <= 1000:
+        num *= 1000
+    return num
+
+
+def _has_destination_hint(brief: Dict[str, Any]) -> bool:
+    if brief_stay_enrich._direction_labels_from_brief(brief):
+        return True
+    se = brief.get("stay_experience")
+    if isinstance(se, dict) and se.get("setting"):
+        return True
+    t = brief_stay_enrich._brief_search_text(brief)
+    return bool(brief_stay_enrich._detect_destinations(t) or brief_stay_enrich._detect_cities(t))
 
 
 def extract_brief_rule_based(text: str) -> Dict[str, Any]:
@@ -53,36 +57,52 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     brief: Dict[str, Any] = {}
     brief["context_raw"] = (text or "").strip()
 
-    budget_value = None
-    budget_suffix = ""
-    m_budget = re.search(
-        r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
+    if re.search(
+        r"бюджет\s+гибк|гибк\w*\s+бюджет|бюджет\s+не\s+принципиал|"
+        r"ориентир\s+по\s+бюджет|без\s+ж[её]стк\w*\s+бюджет|бюджет\s+не\s+важен",
+        t,
+    ):
+        brief["budget_flexible"] = True
+
+    m_budget_range = re.search(
+        r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*[-–]\s*(\d[\d\s]{1,8})\s*"
+        r"(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
         t,
     )
-    if m_budget:
-        budget_value = int(re.sub(r"\s+", "", m_budget.group(1)))
-        budget_suffix = (m_budget.group(2) or "").strip()
-    else:
-        m_money = re.search(
-            r"до\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)",
+    if not m_budget_range:
+        m_budget_range = re.search(
+            r"(\d[\d\s]{1,8})\s*[-–]\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*)(?:\s*руб)?",
             t,
         )
-        if m_money:
-            budget_value = int(re.sub(r"\s+", "", m_money.group(1)))
-            budget_suffix = (m_money.group(2) or "").strip()
+    if m_budget_range:
+        low = _money_to_rub(int(re.sub(r"\s+", "", m_budget_range.group(1))), m_budget_range.group(3) or "")
+        high = _money_to_rub(int(re.sub(r"\s+", "", m_budget_range.group(2))), m_budget_range.group(3) or "")
+        if low > high:
+            low, high = high, low
+        brief["budget_rub_min"] = low
+        brief["budget_rub_max"] = high
 
-    if budget_value is not None:
-        num = budget_value
-        suffix = budget_suffix
-        if suffix in {"к", "т", "тыс", "тысяч"}:
-            num *= 1000
-        elif suffix.startswith("млн") or suffix.startswith("миллион"):
-            num *= 1_000_000
-        elif suffix in {"руб", "₽", "000"}:
-            pass
-        elif not suffix and num <= 1000:
-            num *= 1000
-        brief["budget_rub_max"] = num
+    budget_value = None
+    budget_suffix = ""
+    if "budget_rub_max" not in brief:
+        m_budget = re.search(
+            r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
+            t,
+        )
+        if m_budget:
+            budget_value = int(re.sub(r"\s+", "", m_budget.group(1)))
+            budget_suffix = (m_budget.group(2) or "").strip()
+        else:
+            m_money = re.search(
+                r"до\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)",
+                t,
+            )
+            if m_money:
+                budget_value = int(re.sub(r"\s+", "", m_money.group(1)))
+                budget_suffix = (m_money.group(2) or "").strip()
+
+        if budget_value is not None:
+            brief["budget_rub_max"] = _money_to_rub(budget_value, budget_suffix)
 
     m = re.search(r"(\d+)\s*взросл", t)
     if m:
@@ -177,6 +197,18 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if "без пересад" in t or "прямой рейс" in t or "прямой перел" in t or "прямой пол" in t:
         brief["transfers_allowed"] = False
 
+    flight_preferences: list[str] = []
+    if "эконом" in t and ("перел" in t or "рейс" in t or "авиа" in t or "билет" in t or "класс" in t):
+        flight_preferences.append("эконом")
+    elif re.search(r"\bэконом\b", t) and ("прям" in t or "перел" in t):
+        flight_preferences.append("эконом")
+    if "бизнес" in t and ("класс" in t or "перел" in t or "рейс" in t or "авиа" in t):
+        flight_preferences.append("бизнес")
+    if "комфорт" in t and ("класс" in t or "перел" in t or "рейс" in t):
+        flight_preferences.append("комфорт")
+    if flight_preferences:
+        brief["flight_preferences"] = flight_preferences
+
     if (
         "нет ограничений по перел" in t
         or "без ограничений по перел" in t
@@ -266,6 +298,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         brief["party_preferences"] = parties
 
     destinations = _detect_destinations(t)
+    cities = _detect_cities(t)
 
     has_sea = "море" in t or "пляж" in t
     has_mountains = bool(re.search(r"\bгор", t))
@@ -294,6 +327,10 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     activity_preferences = []
     for dest_name, _ in destinations:
         activity_preferences.append(f"предпочтение по направлению: {dest_name}")
+    for city_name, _tags in cities:
+        pref = f"предпочтение по направлению: {city_name}"
+        if pref not in activity_preferences:
+            activity_preferences.append(pref)
     if "ази" in t:
         activity_preferences.append("предпочтение по направлению: Азия")
     if "европ" in t and not destinations:
@@ -331,17 +368,22 @@ def brief_completeness_score(brief: Dict[str, Any]) -> int:
     score = 0
     if brief.get("months") or brief.get("date_range_raw"):
         score += 3
-    if brief.get("budget_rub_max"):
+    if brief.get("budget_rub_max") or brief.get("budget_flexible"):
         score += 3
     if brief.get("adults") or brief.get("kids_count"):
         score += 3
-    if brief.get("flight_hours_max") or brief.get("flight_hours_unrestricted") or "transfers_allowed" in brief:
+    if (
+        brief.get("flight_hours_max")
+        or brief.get("flight_hours_unrestricted")
+        or "transfers_allowed" in brief
+        or brief.get("flight_preferences")
+    ):
         score += 2
     if "visa_required" in brief or brief.get("visa_status") or brief.get("visa_notes"):
         score += 2
     if brief.get("passports_status") or brief.get("passports_notes"):
         score += 1
-    if brief.get("climate") or brief.get("trip_type"):
+    if brief_stay_enrich.stay_experience_sufficient(brief):
         score += 1
     if brief.get("activity_preferences"):
         score += 1
@@ -377,7 +419,7 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                 if item not in out["months"]:
                     out["months"].append(item)
             continue
-        if k in {"visa_notes", "constraints_notes", "activity_preferences"}:
+        if k in {"visa_notes", "constraints_notes", "activity_preferences", "flight_preferences"}:
             if _is_empty_brief_value(v):
                 continue
             out.setdefault(k, [])
@@ -401,6 +443,19 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                 out[k] = current
             else:
                 out[k] = v
+            continue
+        if k == "stay_experience" and isinstance(v, dict):
+            merged_se: Dict[str, Any] = dict(out.get("stay_experience") or {})
+            for sub_key in ("setting", "accommodation_style", "trip_style"):
+                if v.get(sub_key):
+                    merged_se.setdefault(sub_key, [])
+                    for item in v[sub_key]:
+                        text = str(item).strip()
+                        if text and text not in merged_se[sub_key]:
+                            merged_se[sub_key].append(text)
+            if v.get("season_note"):
+                merged_se["season_note"] = str(v["season_note"]).strip()
+            out[k] = merged_se
             continue
         if _is_empty_brief_value(v) and not _is_empty_brief_value(out.get(k)):
             continue
@@ -448,20 +503,30 @@ def merge_participant_into_brief(
 
 
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
+    brief_stay_enrich.enrich_stay_from_context(brief)
     missing: list[str] = []
     if not brief.get("months"):
         missing.append("Окна дат (месяц/период) или гибкость")
-    if not brief.get("budget_rub_max"):
-        missing.append("Бюджет (хотя бы «до … ₽»)")
+    budget_ok = bool(brief.get("budget_rub_max")) or bool(brief.get("budget_flexible"))
+    if not budget_ok:
+        missing.append("Бюджет (хотя бы «до … ₽» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
     flight_block_ok = (
         bool(brief.get("flight_hours_max"))
         or ("transfers_allowed" in brief)
         or bool(brief.get("flight_hours_unrestricted"))
+        or bool(brief.get("flight_preferences"))
     )
     if not flight_block_ok:
-        missing.append("Ограничение по перелёту (например, «до 5 часов»)")
+        if _has_destination_hint(brief):
+            missing.append(
+                "Перелёт: прямой или с пересадками, класс (эконом/бизнес) — можно своими словами"
+            )
+        else:
+            missing.append(
+                "Перелёт (например, «до 5 часов», «прямой, эконом» или «пересадки допустимы»)"
+            )
     documents_answered = (
         ("visa_required" in brief)
         or bool(brief.get("visa_status"))
@@ -474,8 +539,10 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append("Визы/документы (например, «без визы» / «нужен Шенген» / «загранпаспорта у всех есть»)")
     if brief.get("visa_required") is True and not brief.get("passports_status"):
         missing.append("Загранпаспорта у участников (есть ли у всех / срок действия)")
-    if not brief.get("climate") and not brief.get("trip_type"):
-        missing.append("Климат или тип отдыха (море/горы/город/санаторий и т.п.)")
+    if not brief_stay_enrich.stay_experience_sufficient(brief):
+        missing.append(
+            "Сценарий отдыха (море, горы, спокойный отель — можно своими словами)"
+        )
     return missing
 
 
@@ -509,6 +576,7 @@ def parse_message_to_brief(
         LAST_PARSER_MODE = "rules_only"
 
     flat = merge_brief(rule_based, llm_flat)
+    brief_stay_enrich.enrich_stay_from_context(flat)
     return flat, structured
 
 
@@ -565,7 +633,14 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
             if v:
                 out[k] = v
             continue
-        if k in {"months", "visa_notes", "constraints_notes", "activity_preferences", "passports_notes"}:
+        if k in {
+            "months",
+            "visa_notes",
+            "constraints_notes",
+            "activity_preferences",
+            "passports_notes",
+            "flight_preferences",
+        }:
             if _is_empty_brief_value(v):
                 continue
             out.setdefault(k, [])
@@ -583,6 +658,19 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
                 out[k] = current
             else:
                 out[k] = v
+            continue
+        if k == "stay_experience" and isinstance(v, dict):
+            merged_se: Dict[str, Any] = dict(out.get("stay_experience") or {})
+            for sub_key in ("setting", "accommodation_style", "trip_style"):
+                if v.get(sub_key):
+                    merged_se.setdefault(sub_key, [])
+                    for item in v[sub_key]:
+                        text = str(item).strip()
+                        if text and text not in merged_se[sub_key]:
+                            merged_se[sub_key].append(text)
+            if v.get("season_note"):
+                merged_se["season_note"] = str(v["season_note"]).strip()
+            out[k] = merged_se
             continue
         if k in _ORGANIZER_IMMUTABLE_IF_SET and not _is_empty_brief_value(out.get(k)):
             continue

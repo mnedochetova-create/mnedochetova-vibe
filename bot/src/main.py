@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 import brief_flat_mapper
 import brief_parser
 import brief_pipeline
+import brief_stay_enrich
 import env_util
 from parser_mode import get_parser_mode, llm_available
 import dialog_context
@@ -35,6 +36,40 @@ import live_response
 import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
+
+
+def format_budget_display(brief: Dict[str, Any]) -> str:
+    if brief.get("budget_flexible") and brief.get("budget_rub_min") and brief.get("budget_rub_max"):
+        lo = f"{brief['budget_rub_min']:,}".replace(",", " ")
+        hi = f"{brief['budget_rub_max']:,}".replace(",", " ")
+        return f"гибкий, {lo}–{hi} ₽"
+    if brief.get("budget_rub_min") and brief.get("budget_rub_max"):
+        lo = f"{brief['budget_rub_min']:,}".replace(",", " ")
+        hi = f"{brief['budget_rub_max']:,}".replace(",", " ")
+        return f"{lo}–{hi} ₽"
+    if brief.get("budget_rub_max"):
+        prefix = "гибкий, до " if brief.get("budget_flexible") else "до "
+        return f"{prefix}{brief['budget_rub_max']:,} ₽".replace(",", " ")
+    if brief.get("budget_flexible"):
+        return "гибкий"
+    return "—"
+
+
+def format_flight_display(brief: Dict[str, Any], *, esc: Any = None) -> str:
+    esc_fn = esc if callable(esc) else (lambda value: value)
+    parts: List[str] = []
+    if brief.get("flight_hours_max"):
+        parts.append(f"до {esc_fn(brief['flight_hours_max'])} ч.")
+    elif brief.get("flight_hours_unrestricted"):
+        parts.append("без ограничений по длительности")
+    if brief.get("transfers_allowed") is True:
+        parts.append("пересадки допустимы")
+    elif brief.get("transfers_allowed") is False:
+        parts.append("прямой рейс")
+    prefs = brief.get("flight_preferences") or []
+    if prefs:
+        parts.append(", ".join(esc_fn(str(item)) for item in prefs))
+    return " · ".join(parts) if parts else "—"
 
 
 def setup_logging() -> None:
@@ -208,8 +243,9 @@ def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[i
     elif brief.get("months"):
         lines.append("Даты: " + ", ".join(str(m) for m in brief["months"]))
 
-    if brief.get("budget_rub_max"):
-        lines.append(f"Бюджет: до {brief['budget_rub_max']:,} ₽".replace(",", " "))
+    budget_line = format_budget_display(brief)
+    if budget_line != "—":
+        lines.append(f"Бюджет: {budget_line}")
 
     group_parts: List[str] = []
     if brief.get("adults"):
@@ -219,14 +255,9 @@ def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[i
     if group_parts:
         lines.append("Состав: " + ", ".join(group_parts))
 
-    if brief.get("flight_hours_max"):
-        lines.append(f"Перелёт: до {brief['flight_hours_max']} ч.")
-    elif brief.get("flight_hours_unrestricted"):
-        lines.append("Перелёт: без ограничений по длительности")
-    elif brief.get("transfers_allowed") is True:
-        lines.append("Перелёт: пересадки допустимы")
-    elif brief.get("transfers_allowed") is False:
-        lines.append("Перелёт: желательно без пересадок")
+    flight_line = format_flight_display(brief)
+    if flight_line != "—":
+        lines.append(f"Перелёт: {flight_line}")
 
     if brief.get("trip_duration_days_raw"):
         lines.append(f"Длительность: {brief['trip_duration_days_raw']}")
@@ -237,10 +268,13 @@ def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[i
     if brief.get("passports_status"):
         lines.append(f"Загранпаспорта: {brief['passports_status']}")
 
-    if brief.get("climate"):
+    brief_stay_enrich.enrich_stay_from_context(brief)
+    scenario = brief_stay_enrich.format_stay_experience_display(brief)
+    if scenario:
+        lines.append(f"Сценарий и локация: {scenario}")
+    elif brief.get("climate"):
         lines.append(f"Климат: {brief['climate']}")
-
-    if brief.get("trip_type"):
+    if brief.get("trip_type") and not scenario:
         lines.append(f"Формат: {brief['trip_type']}")
 
     activity = brief.get("activity_preferences") or []
@@ -1203,12 +1237,7 @@ def format_brief_unified(
         dates_value = "—"
     core_facts.append(f"📅 <b>Даты:</b> {dates_value}")
 
-    budget_value = (
-        f"до {brief['budget_rub_max']:,} ₽".replace(",", " ")
-        if brief.get("budget_rub_max")
-        else "—"
-    )
-    core_facts.append(f"💰 <b>Бюджет:</b> {budget_value}")
+    core_facts.append(f"💰 <b>Бюджет:</b> {esc(format_budget_display(brief))}")
 
     if brief.get("adults") or brief.get("kids_count"):
         parts: list[str] = []
@@ -1221,17 +1250,7 @@ def format_brief_unified(
         group_value = "—"
     core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
-    if brief.get("flight_hours_max"):
-        flight_value = f"до {esc(brief['flight_hours_max'])} ч."
-    elif brief.get("flight_hours_unrestricted"):
-        flight_value = "ограничений по длительности перелёта нет"
-    elif brief.get("transfers_allowed") is True:
-        flight_value = "пересадки допустимы"
-    elif brief.get("transfers_allowed") is False:
-        flight_value = "желательно без пересадок"
-    else:
-        flight_value = "—"
-    core_facts.append(f"✈️ <b>Перелёт:</b> {flight_value}")
+    core_facts.append(f"✈️ <b>Перелёт:</b> {esc(format_flight_display(brief, esc=esc))}")
     duration_value = esc(brief["trip_duration_days_raw"]) if brief.get("trip_duration_days_raw") else "—"
     core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
 
@@ -1244,15 +1263,11 @@ def format_brief_unified(
     passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
     core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
 
-    climate_value = esc(humanize_climate(brief["climate"])) if brief.get("climate") else "—"
-    style_facts.append(f"🌤 <b>Климат и локация:</b> {climate_value}")
-
-    trip_type_value = esc(brief["trip_type"]) if brief.get("trip_type") else "—"
-    style_facts.append(f"🏝 <b>Формат отдыха:</b> {trip_type_value}")
+    brief_stay_enrich.enrich_stay_from_context(brief)
+    scenario_value = esc(brief_stay_enrich.format_stay_experience_display(brief)) or "—"
+    style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
 
     directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
-    direction_value = ", ".join(esc(item) for item in directions) if directions else "—"
-    style_facts.append(f"🧭 <b>Предпочтение по направлению:</b> {direction_value}")
 
     extra_value = ", ".join(esc(item) for item in extra_activity) if extra_activity else "—"
     style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
@@ -1291,10 +1306,12 @@ def format_brief_unified(
                 row.append("визы: " + ("нужна" if prefs["visa_required"] else "без визы"))
             if prefs.get("passports_status"):
                 row.append("загранпаспорта: " + esc(prefs["passports_status"]))
-            if prefs.get("climate"):
-                row.append("климат и локация: " + esc(humanize_climate(prefs["climate"])))
-            if prefs.get("trip_type"):
-                row.append("формат отдыха: " + esc(prefs["trip_type"]))
+            brief_stay_enrich.enrich_stay_from_context(prefs)
+            participant_scenario = brief_stay_enrich.format_stay_experience_display(prefs)
+            if participant_scenario:
+                row.append("сценарий и локация: " + esc(participant_scenario))
+            elif prefs.get("climate"):
+                row.append("сценарий и локация: " + esc(humanize_climate(prefs["climate"])))
             if prefs.get("activity_preferences"):
                 row.append("доп. пожелания: " + ", ".join(esc(item) for item in prefs["activity_preferences"]))
             if prefs.get("constraints_notes"):

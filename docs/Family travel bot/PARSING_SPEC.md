@@ -25,7 +25,8 @@
 ### 0.0.1 Детали
 
 - При сбое LLM основной сценарий остаётся работоспособным (fallback на rules).
-- Rule-based (всегда): страны, «в конце августа», «климат в стране» → направление + climate.
+- Rule-based (всегда): страны, города, даты → `stay_experience` через `brief_stay_enrich.py`.
+- LLM (`role_llm`): `preferences.stay_experience` и/или `location_preferences` + `accommodation_preferences` → flat `stay_experience` в `brief_flat_mapper.py`, затем enrich.
 
 ### 0.1 Live responses (формулировки, не парсинг)
 
@@ -39,6 +40,9 @@
 
 - `context_raw` (`string`) — исходный текст пользователя (всегда сохраняется).
 - `budget_rub_max` (`int`) — верхняя граница бюджета в рублях.
+- `budget_rub_min` (`int`) — нижняя граница при диапазоне («400–600к»).
+- `budget_flexible` (`bool`) — бюджет без жёсткой суммы («гибкий»).
+- `flight_preferences` (`string[]`) — класс/формат перелёта (эконом, бизнес и т.п.).
 - `adults` (`int`) — число взрослых.
 - `kids_count` (`int`) — число детей.
 - `kid_age` (`int`) — возраст ребенка, если указан.
@@ -53,8 +57,9 @@
 - `documents_discussed` (`bool`) — тема документов явно обсуждена.
 - `passports_status` (`string`) — статус загранпаспортов.
 - `passports_notes` (`string[]`) — заметки по загранпаспортам.
-- `climate` (`string`) — климат/тип локации.
-- `trip_type` (`string`) — формат отдыха.
+- `stay_experience` (`object`) — сценарий отдыха: `setting`, `accommodation_style`, `trip_style`, `season_note` (собирается из текста, направления и дат; см. `brief_stay_enrich.py`).
+- `climate` (`string`) — legacy, дублируется из `stay_experience` для совместимости.
+- `trip_type` (`string`) — legacy, формат отдыха.
 - `activity_preferences` (`string[]`) — доп. пожелания.
 - `constraints_notes` (`string[]`) — ограничения/важные рамки.
 - `party_preferences` (`object`) — пожелания по ролям/участникам.
@@ -84,7 +89,7 @@
 - даты/окна дат;
 - перелет (часы или пересадки);
 - визы/документы;
-- климат или формат отдыха.
+- сценарий отдыха (если после обогащения контекста нет ни локации, ни формата).
 
 ## 3) Приоритеты белых пятен (gap priorities)
 

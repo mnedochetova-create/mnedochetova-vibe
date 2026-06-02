@@ -55,10 +55,11 @@ facts может содержать:
 
 preferences может содержать:
 
-- climate: object
-- trip_type: object
-- location_preferences: object
-- accommodation_preferences: object
+- stay_experience: object — **основной блок сценария отдыха** (см. ниже)
+- climate: object — только если пользователь буквально говорит про «климат» / «погоду»
+- trip_type: object — только при явном формате («всё включено», «экскурсии»)
+- location_preferences: object — география, регион, побережье, город (дублируется в stay_experience.setting)
+- accommodation_preferences: object — тип отеля/размещения (дублируется в stay_experience.accommodation_style)
 - activity_preferences: object
 - food_preferences: object
 - pace_preferences: object
@@ -114,6 +115,24 @@ documents может содержать:
 - "июль/август" -> ["июль", "август"]
 - "в сентябре" -> ["сентябрь"]
 - Если указана свободная формулировка дат, используй date_range_raw.
+
+## Сценарий и локация (stay_experience)
+
+Собирай **образ отдыха** из формулировок пользователя, не формальный «климат».
+
+preferences.stay_experience.value — объект:
+
+- **setting** (array): география и среда — страна, город, побережье, море, горы, сосны («Бодрум», «Эгейское побережье», «в горах рядом с морем»).
+- **accommodation_style** (array): размещение — бутик, премиум, 5*, у моря, семейный отель.
+- **trip_style** (array): темп и сценарий — семейный, два отеля, экскурсии, спокойный отдых.
+- **season_note** (string): только если в тексте есть месяц/сезон **и** связь с поездкой («июнь — тёплый купальный сезон»). Не выдумывай погоду по общим знаниям без месяца в сообщении.
+
+Правила:
+
+- «премиальный бутик в горах» → accommodation_style: премиум, бутик-отель; setting: горы (и море, если сказано).
+- facts.destination / destination_raw → setting (город/страна).
+- location_preferences → setting; accommodation_preferences → accommodation_style.
+- Не дублируй одно и то же в climate, trip_type и stay_experience без нужды.
 
 ## Нормализация состава
 
