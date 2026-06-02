@@ -39,6 +39,33 @@ def test_flight_preferences_direct_economy() -> None:
     assert not any("Перелёт" in item for item in missing)
 
 
+def test_flight_clarify_moscow_transfer_economy() -> None:
+    brief = brief_parser.extract_brief_from_text("перелет из москвы с 1 пересадкой, эконом класс")
+    assert brief.get("transfers_allowed") is True
+    prefs = brief.get("flight_preferences") or []
+    assert "эконом" in prefs
+    assert any("Москв" in item for item in prefs)
+
+
+def test_flight_clarify_does_not_wipe_existing_brief() -> None:
+    dump = "семья 2 взрослых и 1 ребенок, июль, бюджет до 300к, юг франции, море"
+    base, _ = brief_parser.parse_message_to_brief(dump, role="organizer")
+    clarify, _ = brief_parser.parse_message_to_brief(
+        "перелет из москвы с 1 пересадкой, эконом класс",
+        role="organizer",
+    )
+    merged = brief_parser.merge_organizer_incoming(
+        base,
+        clarify,
+        flow_step="organizer_clarify",
+    )
+    assert merged.get("adults") == 2
+    assert merged.get("budget_rub_max") == 300_000
+    assert "июл" in (merged.get("months") or [])
+    assert merged.get("transfers_allowed") is True
+    assert "эконом" in (merged.get("flight_preferences") or [])
+
+
 def test_date_range_closes_dates_missing() -> None:
     brief = brief_parser.extract_brief_from_text("Турция, 13-24 июня, 2 взрослых, бюджет 300к")
     missing = brief_parser.missing_brief_fields(brief)

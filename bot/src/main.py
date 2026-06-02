@@ -803,6 +803,18 @@ MIXED_FALLBACK_ORGANIZER = (
 )
 
 
+def _append_organizer_dump(existing: Optional[str], new_text: str) -> str:
+    prev = (existing or "").strip()
+    chunk = (new_text or "").strip()
+    if not chunk:
+        return prev
+    if not prev:
+        return chunk
+    if chunk in prev:
+        return prev
+    return f"{prev}\n{chunk}"
+
+
 def build_organizer_brief_reply_parts(
     brief: Dict[str, Any],
     *,
@@ -844,19 +856,26 @@ async def _apply_organizer_brief_from_message(
 ) -> tuple[Dict[str, Any], List[str], Optional[int], Optional[str]]:
     text = message.text or ""
     event_code, existing_brief = await resolve_organizer_event_and_brief(message, state)
+    event = EVENTS.get(event_code, {}) if event_code else {}
+    has_prior_dump = isinstance(event.get("organizer_dump"), str) and bool(event.get("organizer_dump", "").strip())
 
-    if flow_step == "organizer_clarify" and brief_parser.brief_completeness_score(existing_brief) >= 4:
-        incoming, structured = parse_message_to_brief(text, role="organizer")
-        brief = brief_parser.merge_brief_clarify(existing_brief, incoming)
-    else:
-        incoming, structured = parse_message_to_brief(text, role="organizer")
-        brief = merge_brief(existing_brief, incoming)
+    incoming, structured = parse_message_to_brief(text, role="organizer")
+    brief = brief_parser.merge_organizer_incoming(
+        existing_brief,
+        incoming,
+        flow_step=flow_step,
+        has_prior_dump=has_prior_dump,
+    )
 
     if event_code and event_code in EVENTS:
         if structured:
             EVENTS[event_code]["base_brief_structured"] = structured
         if flow_step == "organizer_dump":
-            EVENTS[event_code]["organizer_dump"] = text
+            prev_dump = EVENTS[event_code].get("organizer_dump")
+            if isinstance(prev_dump, str) and prev_dump.strip():
+                EVENTS[event_code]["organizer_dump"] = _append_organizer_dump(prev_dump, text)
+            else:
+                EVENTS[event_code]["organizer_dump"] = text
         dump_text = EVENTS[event_code].get("organizer_dump")
         if isinstance(dump_text, str) and dump_text.strip():
             brief["organizer_dump"] = dump_text
@@ -933,10 +952,12 @@ async def handle_organizer_conversation(
     change_info = {"added_fields": [], "updated_fields": []}
     if brief_updated:
         previous_brief = dict(brief)
-        if brief_parser.brief_completeness_score(brief) >= 4:
-            brief = brief_parser.merge_brief_clarify(brief, incoming)
-        else:
-            brief = merge_brief(brief, incoming)
+        brief = brief_parser.merge_organizer_incoming(
+            brief,
+            incoming,
+            flow_step="organizer_clarify",
+            has_prior_dump=True,
+        )
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
         if event_code and event_code in EVENTS:
             if structured:

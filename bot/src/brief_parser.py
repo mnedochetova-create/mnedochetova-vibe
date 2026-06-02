@@ -257,6 +257,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         or "допустимы пересад" in t
         or "пересадки допустим" in t
         or "с пересадк" in t
+        or re.search(r"с\s*\d+\s*пересад", t)
         or "несколько пересад" in t
         or "через пересад" in t
         or "готовы к пересад" in t
@@ -276,6 +277,24 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         flight_preferences.append("бизнес")
     if "комфорт" in t and ("класс" in t or "перел" in t or "рейс" in t):
         flight_preferences.append("комфорт")
+    if "перел" in t or "рейс" in t or "вылет" in t or "авиа" in t:
+        m_dep = re.search(
+            r"(?:перел[её]?т|вылет|рейс)\s+из\s+([a-zа-яё\-]+(?:\s+[a-zа-яё\-]+)?)",
+            t,
+        )
+        if not m_dep:
+            m_dep = re.search(r"\bиз\s+([a-zа-яё\-]+(?:\s+[a-zа-яё\-]+)?)\b", t)
+        if m_dep:
+            city = m_dep.group(1).strip()
+            if city:
+                low_city = city.lower()
+                if low_city in {"москва", "москвы"}:
+                    label = "Москвы"
+                else:
+                    label = city.title() if city.islower() else city
+                pref = f"из {label}"
+                if pref not in flight_preferences:
+                    flight_preferences.append(pref)
     if flight_preferences:
         brief["flight_preferences"] = flight_preferences
 
@@ -460,6 +479,22 @@ def _is_empty_brief_value(value: Any) -> bool:
     return False
 
 
+def _is_zero_placeholder(value: Any, key: str) -> bool:
+    """LLM иногда возвращает 0 вместо «не указано» — не затираем им заполненные поля."""
+    if key not in {
+        "adults",
+        "kids_count",
+        "kid_age",
+        "budget_rub_max",
+        "budget_rub_min",
+        "budget_eur_max",
+        "budget_amount_max",
+        "flight_hours_max",
+    }:
+        return False
+    return value == 0 or value == 0.0
+
+
 def budget_is_set(brief: Dict[str, Any]) -> bool:
     """Любая явно зафиксированная сумма или «бюджет гибкий» (P1)."""
     if brief.get("budget_flexible"):
@@ -542,6 +577,8 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
     out = dict(base or {})
     for k, v in (incoming or {}).items():
         if v is None:
+            continue
+        if _is_zero_placeholder(v, k):
             continue
         if k == "context_raw":
             _append_context_raw(out, str(v) if v else "")
@@ -636,6 +673,20 @@ def merge_participant_into_brief(
     out.setdefault("participant_preferences", {})
     out["participant_preferences"][participant_name] = incoming
     return out
+
+
+def merge_organizer_incoming(
+    existing_brief: Dict[str, Any],
+    incoming: Dict[str, Any],
+    *,
+    flow_step: str,
+    has_prior_dump: bool = False,
+) -> Dict[str, Any]:
+    """Первый dump — merge_brief; уточнения и продолжение dump — merge_brief_clarify."""
+    has_base = brief_completeness_score(existing_brief) > 0 or has_prior_dump
+    if flow_step == "organizer_clarify" or (flow_step == "organizer_dump" and has_base):
+        return merge_brief_clarify(existing_brief, incoming)
+    return merge_brief(existing_brief, incoming)
 
 
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
@@ -753,6 +804,8 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
     out = dict(base or {})
     for k, v in (incoming or {}).items():
         if v is None:
+            continue
+        if _is_zero_placeholder(v, k):
             continue
         if k == "context_raw":
             _append_context_raw(out, str(v) if v else "")

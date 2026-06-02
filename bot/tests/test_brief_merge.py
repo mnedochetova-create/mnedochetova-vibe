@@ -56,6 +56,49 @@ def test_merge_brief_clarify_keeps_base() -> None:
     assert "гор" in str(merged.get("climate", "")).lower()
 
 
+def test_merge_brief_ignores_llm_zero_placeholders() -> None:
+    base = {
+        "adults": 2,
+        "kids_count": 1,
+        "months": ["июл"],
+        "budget_rub_max": 300_000,
+    }
+    incoming = {
+        "transfers_allowed": True,
+        "flight_preferences": ["эконом"],
+        "adults": 0,
+        "budget_rub_max": 0,
+        "months": [],
+    }
+    merged = brief_parser.merge_brief(base, incoming)
+    assert merged.get("adults") == 2
+    assert merged.get("budget_rub_max") == 300_000
+    assert merged.get("months") == ["июл"]
+    assert merged.get("transfers_allowed") is True
+
+
+def test_merge_organizer_incoming_clarify_preserves_base() -> None:
+    base = {
+        "adults": 2,
+        "months": ["июл"],
+        "budget_rub_max": 300_000,
+    }
+    incoming = {
+        "transfers_allowed": True,
+        "flight_preferences": ["эконом"],
+        "adults": 0,
+        "budget_rub_max": 0,
+    }
+    merged = brief_parser.merge_organizer_incoming(
+        base,
+        incoming,
+        flow_step="organizer_clarify",
+    )
+    assert merged.get("adults") == 2
+    assert merged.get("budget_rub_max") == 300_000
+    assert merged.get("transfers_allowed") is True
+
+
 def test_combined_sea_and_mountains_climate() -> None:
     parsed = brief_parser.extract_brief_rule_based(
         "часть времени на виноградниках в горах, часть на пляже"

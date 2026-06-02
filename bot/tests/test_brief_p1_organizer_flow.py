@@ -11,11 +11,14 @@ if str(SRC_DIR) not in sys.path:
 import brief_parser  # noqa: E402
 
 
-def _merge_organizer_step(base: dict, text: str) -> dict:
+def _merge_organizer_step(base: dict, text: str, *, flow_step: str = "organizer_clarify") -> dict:
     incoming, _ = brief_parser.parse_message_to_brief(text, role="organizer")
-    if brief_parser.brief_completeness_score(base) >= 4:
-        return brief_parser.merge_brief_clarify(base, incoming)
-    return brief_parser.merge_brief(base, incoming)
+    return brief_parser.merge_organizer_incoming(
+        base,
+        incoming,
+        flow_step=flow_step,
+        has_prior_dump=bool(base),
+    )
 
 
 def test_organizer_three_step_turkey_flow_missing_empty() -> None:

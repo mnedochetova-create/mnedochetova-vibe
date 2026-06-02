@@ -31,9 +31,12 @@ pytestmark = pytest.mark.p1_retest
 
 def _merge_organizer_step(base: dict, text: str) -> dict:
     incoming, _ = brief_parser.parse_message_to_brief(text, role="organizer")
-    if brief_parser.brief_completeness_score(base) >= 4:
-        return brief_parser.merge_brief_clarify(base, incoming)
-    return brief_parser.merge_brief(base, incoming)
+    return brief_parser.merge_organizer_incoming(
+        base,
+        incoming,
+        flow_step="organizer_clarify",
+        has_prior_dump=bool(base),
+    )
 
 
 class TestP1RetestCase1FranceFamily:
