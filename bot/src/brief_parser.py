@@ -235,6 +235,10 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             brief["passports_status"] = "не у всех есть"
         if "есть" in t and ("загран" in t or "заграничн" in t):
             brief["passports_status"] = "есть"
+        if re.search(r"загран\w*\s+(?:ок|в\s+порядке|готов)", t) or re.search(
+            r"паспорт\w*\s+(?:ок|в\s+порядке|готов)", t
+        ):
+            brief["passports_status"] = "есть"
         if "срок" in t and ("загран" in t or "заграничн" in t):
             brief.setdefault("passports_notes", [])
             brief["passports_notes"].append("проверить срок действия загранпаспорта")
@@ -293,6 +297,17 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if "франц" in t or "во францию" in t:
         me = ensure_party("организатор")
         me.setdefault("wants", []).append("Франция")
+    if re.search(r"друг\w*\s+отел", t) or "в другом отел" in t:
+        split = ensure_party("разные_отели")
+        split.setdefault("notes", []).append("разные отели / программы в поездке")
+    if "с муж" in t or "с мам" in t or "с пап" in t:
+        family = ensure_party("семья")
+        if "с муж" in t:
+            family.setdefault("notes", []).append("часть поездки с мужем")
+        if "с мам" in t:
+            family.setdefault("notes", []).append("часть поездки с мамой")
+        if "с пап" in t:
+            family.setdefault("notes", []).append("часть поездки с папой")
 
     if parties:
         brief["party_preferences"] = parties
@@ -368,6 +383,8 @@ def brief_completeness_score(brief: Dict[str, Any]) -> int:
     score = 0
     if brief.get("months") or brief.get("date_range_raw"):
         score += 3
+    elif brief.get("trip_duration_days_raw"):
+        score += 1
     if brief.get("budget_rub_max") or brief.get("budget_flexible"):
         score += 3
     if brief.get("adults") or brief.get("kids_count"):
@@ -402,14 +419,24 @@ def _combine_climate(existing: str, new: str) -> str:
     return f"{existing} и {new}"
 
 
+def _append_context_raw(out: Dict[str, Any], new_text: str) -> None:
+    text = (new_text or "").strip()
+    if not text:
+        return
+    prev = str(out.get("context_raw") or "").strip()
+    if not prev:
+        out["context_raw"] = text
+    elif text not in prev:
+        out["context_raw"] = f"{prev}\n{text}"
+
+
 def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base or {})
     for k, v in (incoming or {}).items():
         if v is None:
             continue
         if k == "context_raw":
-            if v:
-                out[k] = v
+            _append_context_raw(out, str(v) if v else "")
             continue
         if k == "months":
             if _is_empty_brief_value(v):
@@ -505,7 +532,7 @@ def merge_participant_into_brief(
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     brief_stay_enrich.enrich_stay_from_context(brief)
     missing: list[str] = []
-    if not brief.get("months"):
+    if not brief.get("months") and not brief.get("date_range_raw"):
         missing.append("Окна дат (месяц/период) или гибкость")
     budget_ok = bool(brief.get("budget_rub_max")) or bool(brief.get("budget_flexible"))
     if not budget_ok:
@@ -630,8 +657,7 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
         if v is None:
             continue
         if k == "context_raw":
-            if v:
-                out[k] = v
+            _append_context_raw(out, str(v) if v else "")
             continue
         if k in {
             "months",
@@ -671,6 +697,11 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
             if v.get("season_note"):
                 merged_se["season_note"] = str(v["season_note"]).strip()
             out[k] = merged_se
+            continue
+        if k == "budget_flexible" and v:
+            out[k] = True
+            continue
+        if k == "budget_rub_min" and not _is_empty_brief_value(out.get("budget_rub_min")):
             continue
         if k in _ORGANIZER_IMMUTABLE_IF_SET and not _is_empty_brief_value(out.get(k)):
             continue

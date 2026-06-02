@@ -94,10 +94,29 @@ def build_step_context_human(
     return f"Сейчас: {role_ru}, этап — {step_line}. {missing_line}"
 
 
+_MISSING_PRIORITY = (
+    "Кто едет",
+    "Окна дат",
+    "Бюджет",
+    "Перелёт",
+    "Визы",
+    "Загранпаспорта",
+    "Сценарий отдыха",
+)
+
+
 def prioritize_missing(missing: List[str], limit: int = 3) -> List[str]:
     if len(missing) <= limit:
         return list(missing)
-    return list(missing[:limit])
+
+    def rank(item: str) -> int:
+        for idx, prefix in enumerate(_MISSING_PRIORITY):
+            if item.startswith(prefix):
+                return idx
+        return len(_MISSING_PRIORITY)
+
+    ordered = sorted(missing, key=rank)
+    return ordered[:limit]
 
 
 def pick_variant(chat_id: int, variants: tuple[str, ...]) -> str:
@@ -117,23 +136,29 @@ def brief_insight_line(brief: Dict[str, Any]) -> str:
             parts.append(f"семья {adults}+{kids}")
         else:
             parts.append(f"{adults} взрослых")
-    dest = brief.get("destinations") or brief.get("destination")
-    if not dest and brief.get("climate"):
-        dest = brief.get("climate")
-    if dest:
-        if isinstance(dest, list):
-            parts.append(", ".join(str(d) for d in dest[:2]))
-        else:
-            parts.append(str(dest))
-    period = brief.get("travel_period") or brief.get("dates")
+    for pref in brief.get("activity_preferences") or []:
+        text = str(pref)
+        if text.lower().startswith("предпочтение по направлению:"):
+            parts.append(text.split(":", 1)[1].strip())
+            break
+    if not parts:
+        se = brief.get("stay_experience")
+        if isinstance(se, dict) and se.get("setting"):
+            parts.append(str(se["setting"][0]))
+    period = brief.get("date_range_raw")
+    if not period and brief.get("months"):
+        period = ", ".join(str(m) for m in brief["months"][:2])
     if period:
         parts.append(str(period))
-    budget = brief.get("budget")
-    if budget:
-        parts.append(f"бюджет {budget}")
-    climate = brief.get("climate") or brief.get("trip_type")
-    if climate:
-        parts.append(str(climate))
+    if brief.get("budget_rub_max"):
+        if brief.get("budget_rub_min"):
+            parts.append(
+                f"бюджет {brief['budget_rub_min']:,}–{brief['budget_rub_max']:,} ₽".replace(",", " ")
+            )
+        else:
+            parts.append(f"бюджет до {brief['budget_rub_max']:,} ₽".replace(",", " "))
+    elif brief.get("budget_flexible"):
+        parts.append("бюджет гибкий")
     if not parts:
         return ""
     deduped: List[str] = []

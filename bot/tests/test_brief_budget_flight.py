@@ -30,6 +30,32 @@ def test_flight_preferences_direct_economy() -> None:
     assert not any("Перелёт" in item for item in missing)
 
 
+def test_date_range_closes_dates_missing() -> None:
+    brief = brief_parser.extract_brief_from_text("Турция, 13-24 июня, 2 взрослых, бюджет 300к")
+    missing = brief_parser.missing_brief_fields(brief)
+    assert not any("Окна дат" in item for item in missing)
+
+
+def test_context_raw_accumulates_on_clarify() -> None:
+    base = brief_parser.extract_brief_from_text("Турция Бодрум, 3 взрослых")
+    extra = brief_parser.extract_brief_from_text("13-23 июня, бюджет гибкий")
+    merged = brief_parser.merge_brief_clarify(base, extra)
+    assert "Бодрум" in (merged.get("context_raw") or "")
+    assert "июн" in (merged.get("context_raw") or "").lower() or merged.get("months")
+
+
+def test_passports_ok_phrase() -> None:
+    brief = brief_parser.extract_brief_from_text("загранпаспорта ок, Турция")
+    assert brief.get("passports_status") == "есть"
+
+
+def test_party_split_hotels() -> None:
+    brief = brief_parser.extract_brief_from_text(
+        "3 взрослых, Бодрум, 3-4 дня с мужем в другом отеле"
+    )
+    assert brief.get("party_preferences")
+
+
 def test_flight_missing_prefers_preferences_when_destination_set() -> None:
     brief = {
         "months": ["июн"],

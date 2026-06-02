@@ -774,6 +774,9 @@ async def _apply_organizer_brief_from_message(
             EVENTS[event_code]["base_brief_structured"] = structured
         if flow_step == "organizer_dump":
             EVENTS[event_code]["organizer_dump"] = text
+        dump_text = EVENTS[event_code].get("organizer_dump")
+        if isinstance(dump_text, str) and dump_text.strip():
+            brief["organizer_dump"] = dump_text
         EVENTS[event_code]["brief"] = brief
         touch_event(EVENTS[event_code])
         save_events()
@@ -1271,6 +1274,26 @@ def format_brief_unified(
 
     extra_value = ", ".join(esc(item) for item in extra_activity) if extra_activity else "—"
     style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
+
+    party_prefs = brief.get("party_preferences") or {}
+    if party_prefs:
+        party_chunks: List[str] = []
+        for role_key, role_data in party_prefs.items():
+            if not isinstance(role_data, dict):
+                continue
+            bits: List[str] = []
+            for want in role_data.get("wants") or []:
+                bits.append(f"хочет: {want}")
+            for note in role_data.get("notes") or []:
+                bits.append(str(note))
+            for constraint in role_data.get("constraints") or []:
+                bits.append(f"ограничение: {constraint}")
+            if role_data.get("constraint"):
+                bits.append(f"ограничение: {role_data['constraint']}")
+            if bits:
+                party_chunks.append(f"{esc(role_key)} — " + "; ".join(esc(b) for b in bits))
+        if party_chunks:
+            style_facts.append("👥 <b>Роли в группе:</b> " + " · ".join(party_chunks))
 
     lines.append("\n🧱 <b>Базовые параметры поездки</b>")
     lines.extend([f"• {f}" for f in core_facts])

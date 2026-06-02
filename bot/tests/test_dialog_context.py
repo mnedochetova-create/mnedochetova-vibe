@@ -19,10 +19,16 @@ def test_dialog_history_trim_and_summary() -> None:
 
 
 def test_brief_insight_line() -> None:
-    brief = {"adults": 2, "kids": 1, "destinations": ["Греция"], "budget": "250к"}
+    brief = {
+        "adults": 2,
+        "kids_count": 1,
+        "activity_preferences": ["предпочтение по направлению: Греция"],
+        "budget_rub_max": 250_000,
+        "months": ["август"],
+    }
     insight = dialog_context.brief_insight_line(brief)
     assert "Греция" in insight
-    assert "250к" in insight
+    assert "250" in insight
 
 
 def test_prioritize_missing() -> None:

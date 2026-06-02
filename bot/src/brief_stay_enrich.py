@@ -80,6 +80,9 @@ def _brief_search_text(brief: Dict[str, Any]) -> str:
     raw = brief.get("context_raw")
     if isinstance(raw, str) and raw.strip():
         parts.append(raw)
+    dump = brief.get("organizer_dump")
+    if isinstance(dump, str) and dump.strip() and dump not in (raw or ""):
+        parts.append(dump)
     for key in ("climate", "trip_type", "date_range_raw"):
         val = brief.get(key)
         if isinstance(val, str) and val.strip():
