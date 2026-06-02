@@ -39,6 +39,10 @@ from storage import load_events_from_file, save_events_to_file
 
 
 def format_budget_display(brief: Dict[str, Any]) -> str:
+    if brief.get("budget_eur_max"):
+        amount = f"{brief['budget_eur_max']:,}".replace(",", " ")
+        prefix = "гибкий, до " if brief.get("budget_flexible") else "до "
+        return f"{prefix}{amount} €"
     if brief.get("budget_flexible") and brief.get("budget_rub_min") and brief.get("budget_rub_max"):
         lo = f"{brief['budget_rub_min']:,}".replace(",", " ")
         hi = f"{brief['budget_rub_max']:,}".replace(",", " ")

@@ -42,6 +42,43 @@ def _money_to_rub(num: int, suffix: str) -> int:
     return num
 
 
+def _has_group_conflict_signal(t: str) -> bool:
+    if "конфликт" in t or "не можем" in t or "не получается" in t:
+        return True
+    for match in re.finditer(r"спор\w*", t):
+        start = match.start()
+        window = t[max(0, start - 4) : start + len(match.group(0)) + 2]
+        if "пасп" in window:
+            continue
+        return True
+    return False
+
+
+def _infer_family_composition(t: str, brief: Dict[str, Any]) -> None:
+    """Явно перечисленные роли в семейной поездке — без «тихого» +1 за организатора."""
+    if brief.get("adults"):
+        return
+    if "семь" not in t and "семей" not in t:
+        return
+
+    adults = 0
+    if "брат" in t:
+        adults += 2 if ("жен" in t or "жена" in t or "с жен" in t) else 1
+    if "родител" in t or "мои родители" in t or ("папа" in t and "мама" in t):
+        adults += 2
+    if re.search(r"(?<![\w])муж(?![\w])", t) or " с мужем" in t:
+        adults += 1
+    if "свекров" in t or "свекор" in t:
+        adults += 1
+    if "племянник" in t or "племянниц" in t:
+        adults += 1
+
+    if adults > 0:
+        brief["adults"] = adults
+    if brief.get("kid_age") and not brief.get("kids_count"):
+        brief["kids_count"] = 1
+
+
 def _has_destination_hint(brief: Dict[str, Any]) -> bool:
     if brief_stay_enrich._direction_labels_from_brief(brief):
         return True
@@ -82,9 +119,19 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         brief["budget_rub_min"] = low
         brief["budget_rub_max"] = high
 
+    m_eur = re.search(
+        r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*(?:евро|eur|€)",
+        t,
+    )
+    if not m_eur:
+        m_eur = re.search(r"(\d[\d\s]{1,8})\s*(?:евро|eur|€)", t)
+    if m_eur and "budget_eur_max" not in brief:
+        brief["budget_eur_max"] = int(re.sub(r"\s+", "", m_eur.group(1)))
+        brief["budget_currency"] = "EUR"
+
     budget_value = None
     budget_suffix = ""
-    if "budget_rub_max" not in brief:
+    if "budget_rub_max" not in brief and "budget_eur_max" not in brief:
         m_budget = re.search(
             r"бюджет(?:ом)?\s*(?:до)?\s*(\d[\d\s]{1,8})\s*(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
             t,
@@ -119,6 +166,9 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     m = re.search(r"(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)", t)
     if m:
         brief["kid_age"] = int(m.group(1))
+        brief.setdefault("kids_count", 1)
+
+    _infer_family_composition(t, brief)
 
     months = [
         "январ",
@@ -139,7 +189,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             brief.setdefault("months", []).append(mon)
 
     m = re.search(
-        rf"(?:в\s+)?(конц[ае]?|начал[оае]?|середин[аы]?|первая\s+половина|вторая\s+половина)\s+({_MONTH_PATTERN})",
+        rf"(?:в\s+)?(конц[ае]?|начал[оае]?|середин[аые]?|середине|первая\s+половина|вторая\s+половина)\s+({_MONTH_PATTERN})",
         t,
     )
     if m:
@@ -258,7 +308,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         brief.setdefault("documents_discussed", True)
         brief["visa_status"] = "нужно оформить"
 
-    if "не можем" in t or "не получается" in t or "спор" in t or "конфликт" in t:
+    if _has_group_conflict_signal(t):
         brief.setdefault("constraints_notes", [])
         if "есть разные мнения в группе" not in brief["constraints_notes"]:
             brief["constraints_notes"].append("есть разные мнения в группе — важно найти компромисс")
@@ -322,8 +372,9 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 
     destinations = _detect_destinations(t)
     cities = _detect_cities(t)
+    regions = brief_stay_enrich._detect_regions(t)
 
-    has_sea = "море" in t or "пляж" in t
+    has_sea = "море" in t or "пляж" in t or "пляжн" in t
     has_mountains = bool(re.search(r"\bгор", t))
     if has_sea and has_mountains:
         brief["climate"] = "море/пляж и горы"
@@ -352,6 +403,10 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         activity_preferences.append(f"предпочтение по направлению: {dest_name}")
     for city_name, _tags in cities:
         pref = f"предпочтение по направлению: {city_name}"
+        if pref not in activity_preferences:
+            activity_preferences.append(pref)
+    for region_name, _tags in regions:
+        pref = f"предпочтение по направлению: {region_name}"
         if pref not in activity_preferences:
             activity_preferences.append(pref)
     if "ази" in t:
@@ -393,7 +448,7 @@ def brief_completeness_score(brief: Dict[str, Any]) -> int:
         score += 3
     elif brief.get("trip_duration_days_raw"):
         score += 1
-    if brief.get("budget_rub_max") or brief.get("budget_flexible"):
+    if brief.get("budget_rub_max") or brief.get("budget_eur_max") or brief.get("budget_flexible"):
         score += 3
     if brief.get("adults") or brief.get("kids_count"):
         score += 3
@@ -542,9 +597,13 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
     missing: list[str] = []
     if not brief.get("months") and not brief.get("date_range_raw"):
         missing.append("Окна дат (месяц/период) или гибкость")
-    budget_ok = bool(brief.get("budget_rub_max")) or bool(brief.get("budget_flexible"))
+    budget_ok = (
+        bool(brief.get("budget_rub_max"))
+        or bool(brief.get("budget_eur_max"))
+        or bool(brief.get("budget_flexible"))
+    )
     if not budget_ok:
-        missing.append("Бюджет (хотя бы «до … ₽» или «бюджет гибкий»)")
+        missing.append("Бюджет (хотя бы «до … ₽/€» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
     flight_block_ok = (
@@ -562,18 +621,7 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
             missing.append(
                 "Перелёт (например, «до 5 часов», «прямой, эконом» или «пересадки допустимы»)"
             )
-    documents_answered = (
-        ("visa_required" in brief)
-        or bool(brief.get("visa_status"))
-        or bool(brief.get("visa_notes"))
-        or bool(brief.get("passports_status"))
-        or bool(brief.get("passports_notes"))
-        or bool(brief.get("documents_discussed"))
-    )
-    if not documents_answered:
-        missing.append("Визы/документы (например, «без визы» / «нужен Шенген» / «загранпаспорта у всех есть»)")
-    if brief.get("visa_required") is True and not brief.get("passports_status"):
-        missing.append("Загранпаспорта у участников (есть ли у всех / срок действия)")
+    # Визы/документы: извлекаем в бриф, но на этапе MVP не спрашиваем отдельно (PARSING_SPEC P3).
     if not brief_stay_enrich.stay_experience_sufficient(brief):
         missing.append(
             "Сценарий отдыха (море, горы, спокойный отель — можно своими словами)"

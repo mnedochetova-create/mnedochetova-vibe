@@ -21,6 +21,10 @@ DESTINATION_HINTS: List[Tuple[str, str, str]] = [
     ("оаэ", "ОАЭ", "море/пляж"),
     ("дубай", "ОАЭ", "море/пляж"),
     ("мальдив", "Мальдивы", "море/пляж"),
+    ("франц", "Франция", "море/пляж"),
+    ("португал", "Португалия", "море/пляж"),
+    ("чех", "Чехия", "город"),
+    ("австри", "Австрия", "горы"),
 ]
 
 # (stem, city/region label, setting tags)
@@ -34,6 +38,20 @@ CITY_HINTS: List[Tuple[str, str, List[str]]] = [
     ("санторин", "Санторини", ["море", "острова"]),
     ("крит", "Крит", ["море", "остров"]),
     ("дубровник", "Дубровник", ["море", "город"]),
+    ("ницц", "Ницца", ["Кот-д'Азур", "Франция", "море", "пляж"]),
+    ("канн", "Канны", ["Кот-д'Азур", "Франция", "море"]),
+    ("марсел", "Марсель", ["Прованс", "Франция", "море"]),
+]
+
+# Регионы / формулировки направления (курируемая база, не веб в рантайме)
+REGION_HINTS: List[Tuple[str, str, List[str]]] = [
+    ("юг франц", "Юг Франции", ["Франция", "Средиземноморье", "море", "пляж"]),
+    ("юга франц", "Юг Франции", ["Франция", "Средиземноморье", "море", "пляж"]),
+    ("прованс", "Прованс", ["Франция", "море", "гастрономия"]),
+    ("кот-д'азур", "Кот-д'Азур", ["Франция", "море", "пляж"]),
+    ("кот д'азур", "Кот-д'Азур", ["Франция", "море", "пляж"]),
+    ("лазурн", "Лазурный берег", ["Франция", "море"]),
+    ("средиземномор", "Средиземноморье", ["море", "пляж"]),
 ]
 
 _SUMMER_MONTH_STEMS = {"май", "июн", "июл", "август"}
@@ -69,6 +87,16 @@ def _detect_cities(t: str) -> List[Tuple[str, List[str]]]:
     found: List[Tuple[str, List[str]]] = []
     seen: set[str] = set()
     for stem, label, tags in CITY_HINTS:
+        if stem in t and label not in seen:
+            found.append((label, tags))
+            seen.add(label)
+    return found
+
+
+def _detect_regions(t: str) -> List[Tuple[str, List[str]]]:
+    found: List[Tuple[str, List[str]]] = []
+    seen: set[str] = set()
+    for stem, label, tags in REGION_HINTS:
         if stem in t and label not in seen:
             found.append((label, tags))
             seen.add(label)
@@ -220,6 +248,9 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     for label, tags in _detect_cities(t):
         _append_unique(setting, [label] + tags)
 
+    for label, tags in _detect_regions(t):
+        _append_unique(setting, [label] + tags)
+
     destinations = _detect_destinations(t)
     for name, default_climate in destinations:
         _append_unique(setting, [name])
@@ -237,6 +268,8 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
         _append_unique(setting, ["горы"])
     if "сосн" in t or "хвой" in t:
         _append_unique(setting, ["сосны"])
+    if "ресторан" in t or "гастроном" in t:
+        _append_unique(trip_style, ["рестораны и гастрономия"])
 
     for pattern, label in _ACCOMMODATION_PATTERNS:
         if pattern.search(t):
