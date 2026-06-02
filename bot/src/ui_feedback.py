@@ -6,70 +6,27 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from itertools import cycle
-from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from aiogram import Bot
-from aiogram.types import FSInputFile, Message
-
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-LOGO_PNG = ASSETS_DIR / "logo.png"
+from aiogram.types import Message
 
 _SPIN_FRAMES = ("◴", "◷", "◶", "◵")
-_bot_logo_file_id: Optional[str] = None
 
 
-async def cache_bot_logo_file_id(bot: Bot) -> None:
-    global _bot_logo_file_id
-    if _bot_logo_file_id:
-        return
-    try:
-        me = await bot.get_me()
-        photos = await bot.get_user_profile_photos(me.id, limit=1)
-        if photos.total_count and photos.photos:
-            _bot_logo_file_id = photos.photos[0][-1].file_id
-    except Exception as err:
-        logging.debug("bot logo file_id unavailable: %s", err)
-
-
-async def _spin_photo_caption(status: Message) -> None:
+async def _spin_status_text(status: Message) -> None:
     frames = cycle(_SPIN_FRAMES)
     while True:
         frame = next(frames)
         try:
-            await status.edit_caption(caption=frame)
+            await status.edit_text(f"{frame} <b>MyTravel.Lab</b>…")
         except Exception:
             pass
         await asyncio.sleep(0.45)
 
 
-async def _send_thinking_logo(message: Message) -> Optional[Message]:
-    """Логотип inline (photo) — Telegram не предлагает скачать как документ."""
-    bot = message.bot
-    if LOGO_PNG.is_file():
-        try:
-            return await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=FSInputFile(str(LOGO_PNG)),
-            )
-        except Exception as err:
-            logging.warning("thinking logo photo failed: %s", err)
-
-    await cache_bot_logo_file_id(bot)
-    if _bot_logo_file_id:
-        try:
-            return await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=_bot_logo_file_id,
-            )
-        except Exception as err:
-            logging.debug("thinking avatar photo failed: %s", err)
-    return None
-
-
 @asynccontextmanager
 async def thinking(message: Message) -> AsyncIterator[None]:
-    """Пока идёт обработка: typing + логотип (спиннер в подписи к фото)."""
+    """Пока идёт обработка: typing + короткий текстовый спиннер (без файлов/фото)."""
     bot = message.bot
     try:
         await bot.send_chat_action(message.chat.id, "typing")
@@ -79,13 +36,8 @@ async def thinking(message: Message) -> AsyncIterator[None]:
     status: Optional[Message] = None
     spin_task: Optional[asyncio.Task] = None
     try:
-        status = await _send_thinking_logo(message)
-        if status is not None:
-            try:
-                await status.edit_caption(caption=_SPIN_FRAMES[0])
-            except Exception:
-                pass
-            spin_task = asyncio.create_task(_spin_photo_caption(status))
+        status = await message.answer(f"{_SPIN_FRAMES[0]} <b>MyTravel.Lab</b>…")
+        spin_task = asyncio.create_task(_spin_status_text(status))
         yield
     finally:
         if spin_task is not None:

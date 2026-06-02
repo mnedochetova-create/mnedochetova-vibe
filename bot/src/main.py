@@ -2594,7 +2594,6 @@ async def main() -> None:
             await asyncio.sleep(wait_seconds)
 
     backfill_invite_links()
-    await ui_feedback.cache_bot_logo_file_id(bot)
 
     # Polling mode should not compete with webhooks.
     # If Telegram API is temporarily slow, do not block startup forever.
