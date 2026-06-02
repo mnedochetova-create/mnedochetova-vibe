@@ -25,6 +25,7 @@
 |----------|------------|
 | [MVP_BOT_SPEC.md](MVP_BOT_SPEC.md) | Спека бота, state machine, фичефлаги |
 | [PARSING_SPEC.md](PARSING_SPEC.md) | Парсинг брифа |
+| [BRIEF_PARSING_ROADMAP.md](BRIEF_PARSING_ROADMAP.md) | **План работ:** killer feature, wow, фазы A–D (сессия правок) |
 | [LIVE_RESPONSE.md](LIVE_RESPONSE.md) | Живые формулировки (system + user prompt) |
 | [../bot/README.md](../bot/README.md) | Запуск, env, деплой Railway |
 
