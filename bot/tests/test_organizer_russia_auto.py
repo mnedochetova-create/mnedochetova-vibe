@@ -5,7 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import brief_domestic_route
+import brief_display
 import brief_parser
+import brief_stay_enrich
 import brief_transport
 from brief_display import format_transport_display, transport_field_label
 
@@ -28,6 +31,53 @@ def test_olga_first_message_route_and_stay():
         brief_parser.missing_brief_fields(brief)
     )
     assert transport_field_label(brief) == "Передвижение"
+
+
+def test_olga_display_title_scenario_and_dates():
+    brief = brief_parser.finalize_organizer_brief(
+        brief_parser.extract_brief_from_text(OLGA_FIRST, role="organizer")
+    )
+    title = brief_display.derive_trip_title(brief)
+    assert "Автопутешествие" in title
+    assert "семья 2+4" in title
+    assert "Во Иванов" not in title
+    assert "примерно" not in brief_domestic_route.format_dates_display(brief).lower()
+
+    scenario = brief_stay_enrich.format_stay_experience_display(brief)
+    assert "[" not in scenario
+    assert "област" in scenario.lower() or "Иванов" in scenario
+    assert "Автопутешествие" in scenario
+
+    acc = brief_domestic_route.format_accommodation_line(brief)
+    assert acc
+    assert "домик" in acc.lower() or "кухн" in acc.lower() or "уедин" in acc.lower()
+
+
+def test_olga_stale_brief_without_accommodation_style():
+    """Сохранённый бриф без accommodation_style, но с organizer_dump — проживание из текста."""
+    polluted = {
+        "adults": 2,
+        "kids_count": 4,
+        "date_range_raw": "примерно 2-15 июля",
+        "budget_rub_max": 200_000,
+        "trip_title": "Во Ивановская область с семьёй",
+        "regions": ["Ивановская область", "Владимирская область", "Нижегородская область"],
+        "must_visit_places": ["Палех", "Гороховец", "Дивеево"],
+        "trip_transport": "ground",
+        "stay_experience": {"setting": ["Москва"], "trip_style": ["экскурсии"]},
+        "destination_primary": "Москва",
+    }
+    restored = brief_parser.restore_organizer_brief_from_event(
+        {"brief": polluted, "organizer_dump": OLGA_FIRST}
+    )
+    assert "Автопутешествие" in restored.get("trip_title", "")
+    assert "Москва" not in brief_stay_enrich.format_stay_experience_display(restored)
+    acc = brief_domestic_route.format_accommodation_line(restored)
+    assert "домик" in acc.lower() or "кухн" in acc.lower() or "уедин" in acc.lower()
+    party = brief_display.format_party_group_summary(restored)
+    assert brief_domestic_route.party_summary_redundant(restored, party)
+    duration = brief_domestic_route.format_duration_display(restored)
+    assert "≈14" in duration or "14 дн" in duration
 
 
 def test_olga_without_flight_clarify():

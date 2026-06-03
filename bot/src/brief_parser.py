@@ -199,6 +199,17 @@ def _extract_domestic_route(t: str, brief: Dict[str, Any]) -> None:
         if re.search(r"путешеств|по\s+городам|экскурс", t):
             brief["trip_type"] = "автопутешествие / региональный тур"
 
+    if re.search(r"проживан\w*", t) and re.search(r"домик|коттедж|гостев|кухн|уедин", t):
+        import brief_domestic_route
+
+        phrase = brief_domestic_route._extract_accommodation_phrase(t)
+        if phrase:
+            se = dict(brief.get("stay_experience") or {})
+            acc = list(se.get("accommodation_style") or [])
+            if phrase not in acc:
+                acc.insert(0, phrase)
+            se["accommodation_style"] = acc
+            brief["stay_experience"] = se
     if re.search(r"домик|коттедж|гостев", t) and (
         "кухн" in t or "уедин" in t or "необычн" in t
     ):
@@ -287,6 +298,9 @@ def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
     _extract_domestic_route(t, brief)
     brief_transport.sync_trip_transport(brief, text)
     brief_transport.reconcile_hours_fields(brief, text)
+    import brief_domestic_route
+
+    brief_domestic_route.normalize_brief_stay_settings(brief)
 
 
 def _detect_destinations(t: str) -> List[Tuple[str, str]]:
@@ -1089,20 +1103,21 @@ def organizer_core_brief_ok(brief: Dict[str, Any]) -> bool:
 
 
 def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Если brief в storage обнулился или без ядра — восстановить из organizer_dump."""
+    """Восстановить бриф из organizer_dump, подготовить к карточке и записать в event."""
+    import brief_domestic_route
+
     brief = dict(event.get("brief") or {})
     dump_text = event.get("organizer_dump")
     has_dump = isinstance(dump_text, str) and bool(dump_text.strip())
-    if organizer_core_brief_ok(brief) and brief_completeness_score(brief) >= 4:
-        brief_display.sync_trip_title(brief)
-        return brief
     if has_dump:
         from_dump = extract_brief_from_text(dump_text)
         brief = merge_brief(from_dump, brief)
-        if isinstance(dump_text, str):
-            brief["organizer_dump"] = dump_text
+        brief["organizer_dump"] = dump_text
         brief = finalize_organizer_brief(brief)
-    brief_display.sync_trip_title(brief)
+    if has_dump and not str(brief.get("context_raw") or "").strip():
+        brief["context_raw"] = dump_text.strip()
+    brief_domestic_route.prepare_brief_for_display(brief)
+    event["brief"] = brief
     return brief
 
 

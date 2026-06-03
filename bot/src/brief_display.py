@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+import brief_domestic_route
 import brief_route_combo
 import brief_stay_enrich
 from brief_transport import (
@@ -178,6 +179,9 @@ def _country_for_title(brief: Dict[str, Any]) -> Optional[str]:
 
 def derive_trip_title(brief: Dict[str, Any]) -> str:
     """Собрать trip_title по правилам (см. модульный docstring)."""
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        return brief_domestic_route.derive_domestic_trip_title(brief)
+
     if brief_route_combo.is_route_combo_planning(brief):
         adults = brief.get("adults")
         period = brief.get("date_range_raw") or (
@@ -221,15 +225,24 @@ def sync_trip_title(brief: Dict[str, Any]) -> str:
     if ctx.strip() and brief_stay_enrich.is_comparison_mode(ctx):
         brief_route_combo.apply_route_combo_planning(ctx, brief)
     title = derive_trip_title(brief)
+    stored = str(brief.get("trip_title") or "").strip()
+    if title == "Новая поездка" and stored:
+        return stored
     brief["trip_title"] = title
     return title
 
 
 def get_trip_title(brief: Dict[str, Any]) -> str:
+    if not brief:
+        return "Новая поездка"
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        brief_domestic_route.prepare_brief_for_display(brief)
+        return str(brief.get("trip_title") or brief_domestic_route.derive_domestic_trip_title(brief))
     stored = str(brief.get("trip_title") or "").strip()
     if stored:
         return stored
-    return derive_trip_title(brief)
+    sync_trip_title(brief)
+    return str(brief.get("trip_title") or derive_trip_title(brief))
 
 
 def _scenario_text_blob(brief: Dict[str, Any]) -> str:
@@ -295,7 +308,11 @@ def format_party_group_summary(brief: Dict[str, Any]) -> str:
     opener = ""
     if isinstance(adults, int):
         if kids:
-            opener = f"Большая семья: {adults} взрослых и {int(kids)} ребёнок"
+            kid_n = int(kids)
+            opener = (
+                f"Большая семья: {adults} взрослых и "
+                f"{brief_domestic_route.format_kids_count(kid_n)}"
+            )
         else:
             opener = f"Группа: {adults} взрослых"
     elif "семей" in ctx or "семь" in ctx:

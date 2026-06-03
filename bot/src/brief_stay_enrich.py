@@ -67,6 +67,10 @@ _SUMMER_MONTH_STEMS = {"май", "июн", "июл", "август"}
 _WARM_SEASON_NOTE = "тёплый сезон, купальный период"
 
 _ACCOMMODATION_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"домик\w*|коттедж|гостев\w*\s+дом"),
+        "домики / коттеджи",
+    ),
     (re.compile(r"бутик(?:\s*[-]?\s*отел)?"), "бутик-отель"),
     (re.compile(r"премиальн|премиум|люкс|5\s*\*|пятизвезд"), "премиум"),
     (re.compile(r"\bв\s+горах\b|горн(?:ой|ого|ые)?\s+отел"), "в горах"),
@@ -331,6 +335,10 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     if not brief:
         return brief
 
+    import brief_domestic_route
+
+    brief_domestic_route.normalize_brief_stay_settings(brief)
+
     if brief_route_combo.is_route_combo_planning(brief):
         t = _brief_search_text(brief)
         se: Dict[str, Any] = dict(brief.get("stay_experience") or {})
@@ -427,8 +435,10 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _period_phrase(brief: Dict[str, Any]) -> str:
+    import brief_domestic_route
+
     if brief.get("date_range_raw"):
-        raw = str(brief["date_range_raw"]).strip()
+        raw = brief_domestic_route._clean_date_range(brief["date_range_raw"])
         if raw.startswith("в "):
             return raw
         return f"в {raw}"
@@ -477,12 +487,20 @@ def _activity_phrase(se: Dict[str, Any], brief: Dict[str, Any]) -> str:
 def _headline_place(se: Dict[str, Any], brief: Optional[Dict[str, Any]] = None) -> Optional[str]:
     if brief and brief_route_combo.is_route_combo_planning(brief):
         return "Планирование комбо"
+    import brief_domestic_route
+
+    if brief and brief_domestic_route.is_domestic_auto_brief(brief):
+        return None
     if brief and brief.get("destination_primary"):
         name = str(brief["destination_primary"]).strip()
-        if name:
+        if name and name.lower() not in {"москва", "moscow"}:
             return f"В {name}"
-    settings = [str(s).strip() for s in (se.get("setting") or []) if str(s).strip()]
+    import brief_domestic_route
+
+    settings = brief_domestic_route.parse_setting_tokens(se.get("setting") or [])
     for tag in settings:
+        if tag.startswith("[") or "област" in tag.lower():
+            continue
         if "юг" in tag.lower() and "франц" in tag.lower():
             return "На юг Франции"
     for tag in settings:
@@ -516,8 +534,14 @@ def format_stay_experience_display(brief: Dict[str, Any], *, escape_html: bool =
     """Короткий связный текст про направление и сезон для карточки брифа."""
     import html as html_module
 
+    import brief_domestic_route
+
     def esc(value: str) -> str:
         return html_module.escape(value) if escape_html else value
+
+    brief_domestic_route.normalize_brief_stay_settings(brief)
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        return esc(brief_domestic_route.format_domestic_scenario(brief))
 
     se = brief.get("stay_experience") if isinstance(brief.get("stay_experience"), dict) else {}
     place = _headline_place(se, brief)

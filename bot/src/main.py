@@ -192,9 +192,10 @@ def invite_share_text_for_event(
     event: Dict[str, Any], *, include_link: bool = False
 ) -> str:
     invite_link = str((event or {}).get("invite_link") or "").strip()
-    brief = (event or {}).get("brief") or {}
-    if not str(brief.get("trip_title") or "").strip():
-        brief_display.sync_trip_title(brief)
+    import brief_domestic_route
+
+    brief = dict((event or {}).get("brief") or {})
+    brief_domestic_route.prepare_brief_for_display(brief, event=event)
     trip_title = brief_display.get_trip_title(brief)
     return build_invite_share_text(
         invite_link, trip_title=trip_title, include_link=include_link
@@ -246,9 +247,11 @@ def format_invite_step_message(
     *,
     event: Optional[Dict[str, Any]] = None,
 ) -> str:
-    brief = (event or {}).get("brief") or {}
-    if event and not str(brief.get("trip_title") or "").strip():
-        brief_display.sync_trip_title(brief)
+    import brief_domestic_route
+
+    brief = dict((event or {}).get("brief") or {})
+    if event:
+        brief_domestic_route.prepare_brief_for_display(brief, event=event)
     trip_title = brief_display.get_trip_title(brief) if brief else ""
     trip_title_esc = html.escape(trip_title) if trip_title else ""
     if trip_title_esc and trip_title != "Новая поездка":
@@ -272,8 +275,10 @@ def format_participant_join_welcome_message(
     user: Any, brief: Dict[str, Any]
 ) -> str:
     """Приветствие участника после перехода по invite deep-link."""
-    if not str(brief.get("trip_title") or "").strip():
-        brief_display.sync_trip_title(brief)
+    import brief_domestic_route
+
+    brief = dict(brief or {})
+    brief_domestic_route.prepare_brief_for_display(brief)
     trip_title = html.escape(brief_display.get_trip_title(brief))
     first = user_display_first_name(user)
     if first:
@@ -539,6 +544,8 @@ async def resolve_organizer_event_and_brief(
 async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str:
     event = EVENTS.get(event_code) or {}
     brief = brief_parser.restore_organizer_brief_from_event(event)
+    touch_event(event)
+    save_events()
     if not event.get("organizer_dump") and not brief:
         flow_step = "organizer_dump"
         await state.set_state(FlowState.organizer_dump)
@@ -1295,6 +1302,7 @@ def format_brief_unified(
     *,
     group_conflicts: Optional[List[str]] = None,
     missing: Optional[List[str]] = None,
+    event: Optional[Dict[str, Any]] = None,
 ) -> str:
     def esc(value: Any) -> str:
         return html.escape(str(value))
@@ -1317,6 +1325,10 @@ def format_brief_unified(
             else:
                 other.append(text)
         return directions, other
+
+    import brief_domestic_route
+
+    brief_domestic_route.prepare_brief_for_display(brief, event=event)
 
     lines: list[str] = []
     lines.append(title)
@@ -1344,8 +1356,10 @@ def format_brief_unified(
 
     core_facts: List[str] = []
     style_facts: List[str] = []
-    if brief.get("date_range_raw"):
-        dates_value = f"<code>{esc(brief['date_range_raw'])}</code>"
+
+    dates_display = brief_domestic_route.format_dates_display(brief)
+    if dates_display:
+        dates_value = f"<code>{esc(dates_display)}</code>"
     elif brief.get("months"):
         dates_value = ", ".join(esc(item) for item in brief["months"])
     else:
@@ -1359,7 +1373,7 @@ def format_brief_unified(
         if brief.get("adults"):
             parts.append(f"{brief['adults']} взрослых")
         if brief.get("kids_count"):
-            parts.append(format_kids(int(brief["kids_count"])))
+            parts.append(brief_domestic_route.format_kids_count(int(brief["kids_count"])))
         group_value = ", ".join(parts)
     else:
         group_value = "—"
@@ -1370,7 +1384,7 @@ def format_brief_unified(
     core_facts.append(
         f"{t_icon} <b>{esc(t_label)}:</b> {esc(format_transport_display(brief, esc=esc, missing=missing))}"
     )
-    duration_value = esc(brief_display.normalize_duration_display(brief.get("trip_duration_days_raw")))
+    duration_value = esc(brief_domestic_route.format_duration_display(brief))
     core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
 
     passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
@@ -1380,8 +1394,12 @@ def format_brief_unified(
     scenario_value = esc(brief_stay_enrich.format_stay_experience_display(brief)) or "—"
     style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
 
+    acc_line = brief_domestic_route.format_accommodation_line(brief)
+    if acc_line:
+        style_facts.append(f"🏡 <b>Проживание:</b> {esc(acc_line)}")
+
     regions = brief.get("regions") or []
-    if regions:
+    if regions and not brief_domestic_route.is_domestic_auto_brief(brief):
         style_facts.append(f"🗺 <b>Регионы:</b> {', '.join(esc(str(r)) for r in regions)}")
     must_visit = brief.get("must_visit_places") or []
     if must_visit:
@@ -1402,7 +1420,7 @@ def format_brief_unified(
         style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
 
     party_summary = brief_display.format_party_group_summary(brief)
-    if party_summary:
+    if party_summary and not brief_domestic_route.party_summary_redundant(brief, party_summary):
         style_facts.append(f"👥 <b>Группа:</b> {esc(party_summary)}")
 
     lines.append("\n🧱 <b>Базовые параметры поездки</b>")
@@ -1474,21 +1492,29 @@ def format_brief_update_message(
     event_number: Optional[int] = None,
     *,
     missing: Optional[List[str]] = None,
+    event: Optional[Dict[str, Any]] = None,
 ) -> str:
     return format_brief_unified(
         brief=brief,
         event_number=event_number,
         title="🌿 <b>Вот что собрала о твоей поездке</b>",
         missing=missing if missing is not None else missing_brief_fields(brief),
+        event=event,
     )
 
 
-def format_brief_for_participant(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
+def format_brief_for_participant(
+    brief: Dict[str, Any],
+    event_number: Optional[int] = None,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+) -> str:
     return format_brief_unified(
         brief=brief,
         event_number=event_number,
         title="📌 <b>Актуальный бриф поездки</b>",
         missing=missing_brief_fields(brief),
+        event=event,
     )
 
 
@@ -1939,12 +1965,14 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
     event_number = event.get("event_number")
     if is_organizer:
         brief = brief_parser.restore_organizer_brief_from_event(event)
+        touch_event(event)
+        save_events()
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         await state.set_state(FlowState.organizer_clarify)
         missing = missing_brief_fields(brief)
         await callback.message.answer(
             f"👑 Ты снова в поездке <b>#{event_number if isinstance(event_number, int) else html.escape(event_code)}</b> как организатор.\n\n"
-            f"{format_brief_update_message(brief, event_number=event_number, missing=missing)}\n\n"
+            f"{format_brief_update_message(brief, event_number=event_number, missing=missing, event=event)}\n\n"
             + (
                 "Продолжай уточнения одним сообщением."
                 if missing
@@ -2171,13 +2199,15 @@ async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMC
         return
     if role == "organizer":
         brief = brief_parser.restore_organizer_brief_from_event(event)
+        touch_event(event)
+        save_events()
     else:
         brief = event.get("brief") or {}
     event_number = event.get("event_number")
     if role == "participant":
-        body = format_brief_for_participant(brief, event_number=event_number)
+        body = format_brief_for_participant(brief, event_number=event_number, event=event)
     else:
-        body = format_brief_update_message(brief, event_number=event_number)
+        body = format_brief_update_message(brief, event_number=event_number, event=event)
     await callback.message.answer(body, reply_markup=main_menu_keyboard())
 
 
@@ -2198,12 +2228,14 @@ async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: 
     event_number = event.get("event_number")
     if role == "organizer":
         brief = brief_parser.restore_organizer_brief_from_event(event)
+        touch_event(event)
+        save_events()
         await state.update_data(role="organizer", event_code=event_code, brief=brief)
         missing = missing_brief_fields(brief)
         await state.set_state(FlowState.organizer_clarify)
         await message.answer(
             f"📂 <b>Поездка</b> · #{event_number if isinstance(event_number, int) else '—'}\n\n"
-            f"{format_brief_update_message(brief, event_number=event_number)}\n\n"
+            f"{format_brief_update_message(brief, event_number=event_number, event=event)}\n\n"
             "Напиши одним сообщением, что уточнить или дополнить.",
             reply_markup=main_menu_keyboard(),
         )
@@ -2403,7 +2435,9 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
     participant_row["updated_at"] = now_ts()
     participants[participant_id] = participant_row
     save_events()
-    event_brief = event.get("brief") or {}
+    event_brief = brief_parser.restore_organizer_brief_from_event(event)
+    touch_event(event)
+    save_events()
     event_number = event.get("event_number")
     participant_name = (
         message.from_user.full_name
@@ -2420,7 +2454,7 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
         format_participant_join_welcome_message(message.from_user, event_brief),
     )
     await message.answer(
-        f"{format_brief_for_participant(event_brief, event_number=event_number)}"
+        f"{format_brief_for_participant(event_brief, event_number=event_number, event=event)}"
     )
     await log_session_action(
         message.bot,
@@ -2479,7 +2513,7 @@ async def participant_confirm_callback_handler(callback: CallbackQuery, state: F
             "🔔 <b>Участник добавил пожелания</b>\n"
             "Я обновила бриф и отдельно показала, что изменилось.\n\n"
             f"{html.escape(user_caption)} подтвердил(а), что всё верно.\n\n"
-            f"{format_brief_for_participant(event.get('brief') or {}, event_number=event.get('event_number'))}",
+            f"{format_brief_for_participant(brief_parser.restore_organizer_brief_from_event(event), event_number=event.get('event_number'), event=event)}",
             reply_markup=invite_waiting_keyboard(event),
         )
         if participants_all_confirmed(event):
