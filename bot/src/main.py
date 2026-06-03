@@ -173,15 +173,13 @@ def build_invite_share_text(
     trip_title: Optional[str] = None,
     include_link: bool = False,
 ) -> str:
-    """Текст приглашения для пересылки участнику.
-
-    Для t.me/share/url ссылку в текст не добавляем — Telegram подставляет её из параметра url.
-    """
+    """Текст приглашения для пересылки участнику (без технической ссылки в теле)."""
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
     body = (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
         "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
-        "и допиши одним сообщением, что важно лично тебе."
+        "и допиши одним сообщением, что важно лично тебе.\n\n"
+        "Нажми кнопку ниже «Присоединиться к поездке» — откроется бот с этой поездкой."
     )
     if include_link:
         return f"{body}\n\n{invite_link}"
@@ -202,15 +200,26 @@ def invite_share_text_for_event(
     )
 
 
-def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Открывает выбор чата/контакта в Telegram (t.me/share/url)."""
-    text = share_text if share_text is not None else build_invite_share_text(invite_link)
-    if invite_link and invite_link in text:
-        text = text.replace(invite_link, "").strip().rstrip("\n")
-    return (
-        "https://t.me/share/url?"
-        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
+def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
+    """Кнопка входа — без сырой ссылки в тексте пересылки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Присоединиться к поездке",
+                    url=invite_link,
+                )
+            ],
+        ]
     )
+
+
+def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
+    """Устар.: t.me/share/url дублирует url отдельной строкой. Оставлено для тестов."""
+    text = share_text if share_text is not None else build_invite_share_text(invite_link)
+    if invite_link and invite_link not in text:
+        text = f"{text}\n\n{invite_link}"
+    return f"https://t.me/share/url?text={quote(text, safe='')}"
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -265,9 +274,9 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Нажми <b>📤 Поделиться приглашением</b> — выбери чат с участником.\n"
-        "В пересылке будет ссылка: в боте посмотрят, что уже собрано, "
-        "и допишут пожелания <b>одним сообщением</b>."
+        "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
+        "В тексте нет технической ссылки — вход по кнопке <b>Присоединиться к поездке</b>.\n\n"
+        "Кнопка «📤 Поделиться приглашением» пришлёт это сообщение ещё раз, если нужно."
     )
 
 
@@ -1540,22 +1549,14 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
     if event:
         ensure_event_invite_link(event)
-    invite_link = (event or {}).get("invite_link") if event else None
-    if invite_link:
-        share_text = (
-            invite_share_text_for_event(event)
-            if event
-            else build_invite_share_text(invite_link)
-        )
-        share_url = telegram_share_url(invite_link, share_text=share_text)
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📤 Поделиться приглашением", url=share_url)],
-            ]
-        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📤 Поделиться приглашением", callback_data="event:invite_share")],
+            [
+                InlineKeyboardButton(
+                    text="📤 Поделиться приглашением",
+                    callback_data="event:invite_share",
+                )
+            ],
         ]
     )
 
@@ -1894,6 +1895,22 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     )
 
 
+async def send_invite_forward_card(
+    message: Message,
+    event: Dict[str, Any],
+) -> bool:
+    """Сообщение для пересылки: текст + кнопка, без https://… в теле."""
+    ensure_event_invite_link(event)
+    invite_link = str(event.get("invite_link") or "").strip()
+    if not invite_link:
+        return False
+    await message.answer(
+        invite_share_text_for_event(event),
+        reply_markup=invite_forward_keyboard(invite_link),
+    )
+    return True
+
+
 async def show_organizer_invite_step(
     message: Message,
     state: FSMContext,
@@ -1925,6 +1942,7 @@ async def show_organizer_invite_step(
         format_invite_step_message(event_number, event=event),
         reply_markup=invite_ready_keyboard(event),
     )
+    await send_invite_forward_card(message, event)
     await log_session_action(
         message.bot,
         message,
@@ -2158,7 +2176,23 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    await show_organizer_invite_step(callback.message, state)
+    _event_code, event = await _organizer_event_from_state(state)
+    if not event:
+        await callback.message.answer(
+            "Сначала создай поездку через «✨ Новая поездка».",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    if not await send_invite_forward_card(callback.message, event):
+        await callback.message.answer(
+            "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    await callback.message.answer(
+        "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).",
+        reply_markup=invite_waiting_keyboard(event),
+    )
 
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:

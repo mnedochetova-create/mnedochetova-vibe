@@ -1,4 +1,4 @@
-"""Шаг приглашения: одна кнопка share URL и приветствие участника."""
+"""Шаг приглашения: пересылка сообщения с кнопкой (без t.me/share/url в тексте)."""
 
 import sys
 from pathlib import Path
@@ -11,27 +11,30 @@ if str(SRC_DIR) not in sys.path:
 import main  # noqa: E402
 
 
-def test_invite_ready_keyboard_single_share_url_button(monkeypatch) -> None:
+def test_invite_ready_keyboard_uses_forward_callback(monkeypatch) -> None:
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     event = {"invite_link": "https://t.me/MyTravelLabBot?start=join_abc123"}
     kb = main.invite_ready_keyboard(event)
     assert len(kb.inline_keyboard) == 1
-    assert len(kb.inline_keyboard[0]) == 1
     btn = kb.inline_keyboard[0][0]
     assert btn.text == "📤 Поделиться приглашением"
-    assert btn.url is not None
-    assert btn.url.startswith("https://t.me/share/url?")
-    assert "url=" in btn.url
-    assert "text=" in btn.url
-    assert "join_abc123" in btn.url
-    assert btn.callback_data is None
+    assert btn.callback_data == "event:invite_share"
+    assert btn.url is None
+
+
+def test_invite_forward_keyboard_hides_raw_link() -> None:
+    link = "https://t.me/MyTravelLabBot?start=join_abc123"
+    kb = main.invite_forward_keyboard(link)
+    btn = kb.inline_keyboard[0][0]
+    assert btn.text == "✅ Присоединиться к поездке"
+    assert btn.url == link
 
 
 def test_invite_step_message_short() -> None:
     text = main.format_invite_step_message(3)
     assert "#3" in text
     assert "Поделиться приглашением" in text
-    assert "в боте" in text.lower()
+    assert "Переслать" in text
     assert "Готово — ссылка" not in text
     assert "вручную в чате" not in text
 
@@ -60,9 +63,7 @@ def test_build_invite_share_text_for_contacts() -> None:
     text = main.build_invite_share_text(link, trip_title="Во Францию с семьёй")
     assert "Привет" in text
     assert "Во Францию с семьёй" in text
-    assert "в боте" in text.lower()
-    assert "посмотри" in text.lower()
-    assert "Бюджет:" not in text
+    assert "Присоединиться к поездке" in text
     assert link not in text
     assert "MyTravel.Lab" in text
 
@@ -80,16 +81,16 @@ def test_invite_share_text_for_event_uses_trip_title() -> None:
     text = main.invite_share_text_for_event(event)
     assert "Во Францию с семьёй" in text
     assert "join_abc" not in text
+    assert "https://" not in text
 
 
-def test_telegram_share_url_native_share_format() -> None:
+def test_telegram_share_url_text_only_when_used() -> None:
     from urllib.parse import parse_qs, unquote, urlparse
 
     link = "https://t.me/MyTravelLabBot?start=join_abc123"
     event = {"invite_link": link, "brief": {"trip_title": "Во Францию с семьёй"}}
     share_url = main.telegram_share_url(link, share_text=main.invite_share_text_for_event(event))
     query = parse_qs(urlparse(share_url).query)
-    assert query["url"][0] == link
+    assert "url" not in query
     text = unquote(query["text"][0])
-    assert link not in text
     assert "Во Францию с семьёй" in text
