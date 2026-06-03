@@ -16,4 +16,4 @@ def test_restore_fsm_path_uses_dump_when_brief_empty() -> None:
     brief = brief_parser.restore_organizer_brief_from_event(event)
     assert brief.get("adults") == 2
     assert brief.get("budget_rub_max") == 300_000
-    assert "июл" in (brief.get("months") or [])
+    assert "июль" in (brief.get("months") or [])

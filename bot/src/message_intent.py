@@ -66,6 +66,15 @@ _BRIEF_HINTS = (
     r"ноч",
 )
 
+_EXPLORATION_HINTS = (
+    r"совмест",
+    r"посмотреть\s+максим",
+    r"чем\s+можно",
+    r"что\s+лучше",
+    r"какое\s+направлен",
+    r"вариант\w*\s+поездк",
+)
+
 _CONVERSATION_HINTS = (
     r"^что\s+(написать|делать|дальше|отправить)",
     r"^как\s+(это|работает|начать|правильно)",
@@ -117,7 +126,12 @@ def classify_message_intent(
 
     brief_score = _count_patterns(normalized, _BRIEF_HINTS)
     conv_score = _count_patterns(normalized, _CONVERSATION_HINTS)
-    has_question = _ends_with_question(normalized)
+    exploration_score = _count_patterns(normalized, _EXPLORATION_HINTS)
+    has_question = "?" in normalized or _ends_with_question(normalized)
+
+    if exploration_score >= 1 and brief_score >= 1 and has_question:
+        llm = _classify_with_llm_if_enabled(text, role=role, flow_step=flow_step)
+        return llm or "mixed"
 
     if len(normalized) > 120 and brief_score >= 2:
         return "brief_input"
@@ -140,13 +154,19 @@ def classify_message_intent(
         return "brief_input"
 
     if flow_step in {"organizer_dump", "organizer_clarify", "participant_contribute"}:
+        if exploration_score >= 1 and brief_score >= 1 and has_question:
+            return "mixed"
         if flow_step == "organizer_clarify" and (brief_score >= 1 or len(normalized) > 15):
+            if exploration_score >= 1 and has_question:
+                return "mixed"
             return "brief_input"
         if conv_score >= 1 and brief_score == 0:
             return "conversation"
         if brief_score >= 1:
             return "brief_input"
         if len(normalized) > 12:
+            if exploration_score >= 1 and has_question:
+                return "mixed"
             return "brief_input"
 
     if conv_score >= 1:

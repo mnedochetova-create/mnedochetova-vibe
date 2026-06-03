@@ -1035,11 +1035,13 @@ async def route_organizer_text_message(
         role="organizer",
         flow_step=flow_step,
     )
-    # На шагах брифа любой фактический ввод идёт в парсер (не в живой диалог).
+    # На шагах брифа чистые вопросы без фактов — в парсер; mixed и brief_input — как классификатор.
     if flow_step in {"organizer_dump", "organizer_clarify"}:
         text_stripped = (message.text or "").strip()
         if text_stripped and intent == "conversation":
             intent = "brief_input"
+        elif intent == "mixed":
+            pass
     logging.info("Organizer message intent=%s flow_step=%s", intent, flow_step)
     if intent == "brief_input":
         await handle_organizer_brief_input(message, state, flow_step=flow_step)
@@ -1352,6 +1354,10 @@ def format_brief_unified(
     style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
 
     directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
+    alts = brief.get("destination_alternatives") or []
+    if alts:
+        alt_value = ", ".join(esc(str(a)) for a in alts)
+        style_facts.append(f"🔀 <b>Рассматриваются:</b> {alt_value}")
     extra_filtered = brief_display.filter_extra_activity_preferences(brief, extra_activity)
     if extra_filtered:
         extra_value = ", ".join(esc(item) for item in extra_filtered)
@@ -1391,16 +1397,30 @@ def format_brief_unified(
                 row.append("перелёт: пересадки допустимы")
             elif prefs.get("transfers_allowed") is False:
                 row.append("перелёт: без пересадок")
+            flight_prefs = prefs.get("flight_preferences") or []
+            if flight_prefs:
+                row.append("перелёт: " + ", ".join(esc(str(item)) for item in flight_prefs))
             if prefs.get("passports_status"):
                 row.append("загранпаспорта: " + esc(prefs["passports_status"]))
-            brief_stay_enrich.enrich_stay_from_context(prefs)
-            participant_scenario = brief_stay_enrich.format_stay_experience_display(prefs)
-            if participant_scenario:
-                row.append("сценарий и локация: " + esc(participant_scenario))
+            direction_prefs = [
+                str(item)
+                for item in (prefs.get("activity_preferences") or [])
+                if str(item).lower().startswith("предпочтение по направлению:")
+            ]
+            if direction_prefs:
+                brief_stay_enrich.enrich_stay_from_context(prefs)
+                participant_scenario = brief_stay_enrich.format_stay_experience_display(prefs)
+                if participant_scenario:
+                    row.append("сценарий и локация: " + esc(participant_scenario))
             elif prefs.get("climate"):
                 row.append("сценарий и локация: " + esc(humanize_climate(prefs["climate"])))
-            if prefs.get("activity_preferences"):
-                row.append("доп. пожелания: " + ", ".join(esc(item) for item in prefs["activity_preferences"]))
+            extra_activity = [
+                str(item)
+                for item in (prefs.get("activity_preferences") or [])
+                if not str(item).lower().startswith("предпочтение по направлению:")
+            ]
+            if extra_activity:
+                row.append("доп. пожелания: " + ", ".join(esc(item) for item in extra_activity))
             if prefs.get("constraints_notes"):
                 row.append("ограничения: " + ", ".join(esc(item) for item in prefs["constraints_notes"]))
             if not row and prefs.get("context_raw"):

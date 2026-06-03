@@ -32,8 +32,8 @@ def _load_cases() -> List[Dict[str, Any]]:
 
 def _parse_case(case: Dict[str, Any]) -> Dict[str, Any]:
     text = case["text"]
-    role = case.get("role", "organizer")
     rule_based = brief_parser.extract_brief_rule_based(text)
+    brief_parser._finalize_brief_from_text(rule_based, text)
     brief_parser.brief_stay_enrich.enrich_stay_from_context(rule_based)
     return rule_based
 

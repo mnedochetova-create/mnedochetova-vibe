@@ -23,6 +23,133 @@ _MONTH_PATTERN = (
     r"август[а]?|сентябр[ья]?|октябр[ья]?|ноябр[ья]?|декабр[ья]?"
 )
 
+_MONTH_STEM_TO_FULL: Dict[str, str] = {
+    "январ": "январь",
+    "феврал": "февраль",
+    "март": "март",
+    "апрел": "апрель",
+    "май": "май",
+    "июн": "июнь",
+    "июл": "июль",
+    "август": "август",
+    "сентябр": "сентябрь",
+    "октябр": "октябрь",
+    "ноябр": "ноябрь",
+    "декабр": "декабрь",
+}
+
+
+def _normalize_month_token(token: str) -> str:
+    low = (token or "").strip().lower()
+    if not low:
+        return low
+    for stem, full in _MONTH_STEM_TO_FULL.items():
+        if low == stem or low.startswith(stem):
+            return full
+    return low
+
+
+def _append_month(brief: Dict[str, Any], stem: str) -> None:
+    month = _normalize_month_token(stem)
+    brief.setdefault("months", [])
+    if month and month not in brief["months"]:
+        brief["months"].append(month)
+
+
+def _strip_comparison_visa_and_party(t: str, brief: Dict[str, Any]) -> None:
+    if not brief_stay_enrich.is_comparison_mode(t):
+        return
+    notes = brief.get("visa_notes") or []
+    filtered = [
+        n
+        for n in notes
+        if "франц" not in str(n).lower() and "шенген" not in str(n).lower()
+    ]
+    if filtered != notes:
+        if filtered:
+            brief["visa_notes"] = filtered
+        else:
+            brief.pop("visa_notes", None)
+        if not brief.get("visa_notes") and "виза" not in t and "шенген" not in t:
+            brief.pop("visa_required", None)
+            brief.pop("documents_discussed", None)
+    parties = brief.get("party_preferences")
+    if not isinstance(parties, dict):
+        return
+    org = parties.get("организатор")
+    if not isinstance(org, dict):
+        return
+    wants = org.get("wants") or []
+    alts = {str(a).lower() for a in (brief.get("destination_alternatives") or [])}
+    new_wants = [w for w in wants if str(w).lower() not in alts]
+    if new_wants != wants:
+        if new_wants:
+            org["wants"] = new_wants
+        else:
+            org.pop("wants", None)
+        if not org:
+            parties.pop("организатор", None)
+        if not parties:
+            brief.pop("party_preferences", None)
+
+
+def _apply_destination_roles(t: str, brief: Dict[str, Any]) -> None:
+    primary, alternatives = brief_stay_enrich.destinations_with_roles(t)
+    if not primary and not alternatives:
+        return
+    if primary:
+        brief["destination_primary"] = primary
+        if not brief.get("climate"):
+            for stem, name, default_climate in _DESTINATION_HINTS:
+                if name == primary:
+                    brief["climate"] = default_climate
+                    break
+    if alternatives:
+        brief["destination_alternatives"] = alternatives
+    elif brief.get("destination_alternatives"):
+        brief.pop("destination_alternatives", None)
+
+    activity_preferences: List[str] = []
+    non_direction: List[str] = []
+    for item in brief.get("activity_preferences") or []:
+        low = str(item).lower()
+        if low.startswith("предпочтение по направлению:"):
+            continue
+        non_direction.append(str(item))
+    if primary:
+        activity_preferences.append(f"предпочтение по направлению: {primary}")
+    activity_preferences.extend(non_direction)
+    if activity_preferences:
+        brief["activity_preferences"] = activity_preferences
+
+    se = dict(brief.get("stay_experience") or {})
+    setting = [str(s) for s in (se.get("setting") or [])]
+    country_names = {primary, *alternatives} if primary else set(alternatives)
+    trimmed = [
+        s
+        for s in setting
+        if s not in country_names
+        or (primary and s == primary)
+    ]
+    if primary and primary not in trimmed:
+        trimmed.insert(0, primary)
+    if trimmed:
+        se["setting"] = trimmed
+        brief["stay_experience"] = se
+    _strip_comparison_visa_and_party(t, brief)
+
+
+def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
+    t = (text or "").lower()
+    if brief.get("months"):
+        brief["months"] = [_normalize_month_token(m) for m in brief["months"]]
+        seen: List[str] = []
+        for m in brief["months"]:
+            if m and m not in seen:
+                seen.append(m)
+        brief["months"] = seen
+    _apply_destination_roles(t, brief)
+
 
 def _detect_destinations(t: str) -> List[Tuple[str, str]]:
     return brief_stay_enrich._detect_destinations(t)
@@ -30,6 +157,35 @@ def _detect_destinations(t: str) -> List[Tuple[str, str]]:
 
 def _detect_cities(t: str) -> List[Tuple[str, List[str]]]:
     return brief_stay_enrich._detect_cities(t)
+
+
+def _normalize_layover_hub(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in {"турция", "турции", "турцию"}:
+        return "Турции"
+    if low.endswith("ии"):
+        return raw.strip()[:-2] + "ия"
+    if low.endswith("и"):
+        return raw.strip()[:-1] + "ия"
+    return raw.strip().title() if raw.islower() else raw.strip()
+
+
+def _extract_layover_flight_preferences(t: str) -> list[str]:
+    """Пересадка/транзит с ночёвкой у аэропорта — не destination поездки."""
+    if not re.search(r"(?:пересадк|стыковк|транзит|остановк)", t):
+        return []
+    prefs: list[str] = []
+    long_layover = bool(
+        re.search(r"(?:долг|длинн)\w*\s+пересад", t)
+        or ("пересад" in t and ("долг" in t or "длинн" in t))
+    )
+    m = re.search(r"пересадк\w*\s+в\s+([a-zа-яё\-]+)", t)
+    hub = _normalize_layover_hub(m.group(1)) if m else ""
+    if long_layover:
+        prefs.append(f"долгая пересадка в {hub}" if hub else "долгая пересадка")
+    if "аэропорт" in t and ("отел" in t or "поспать" in t or "сон" in t or "ноч" in t):
+        prefs.append("отель у аэропорта для отдыха на пересадке")
+    return prefs
 
 
 def _money_to_rub(num: int, suffix: str) -> int:
@@ -186,26 +342,12 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 
     _infer_family_composition(t, brief)
 
-    months = [
-        "январ",
-        "феврал",
-        "март",
-        "апрел",
-        "май",
-        "июн",
-        "июл",
-        "август",
-        "сентябр",
-        "октябр",
-        "ноябр",
-        "декабр",
-    ]
-    for mon in months:
+    for mon in _MONTH_STEM_TO_FULL:
         if mon in t:
-            brief.setdefault("months", []).append(mon)
+            _append_month(brief, mon)
 
     m = re.search(
-        rf"(?:в\s+)?(конц[ае]?|начал[оае]?|середин[аые]?|середине|первая\s+половина|вторая\s+половина)\s+({_MONTH_PATTERN})",
+        rf"(?:в\s+)?(конец|конц[ае]|начал[оае]?|середин[аые]?|середине|первая\s+половина|вторая\s+половина)\s+({_MONTH_PATTERN})",
         t,
     )
     if m:
@@ -295,6 +437,9 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
                 pref = f"из {label}"
                 if pref not in flight_preferences:
                     flight_preferences.append(pref)
+    layover_prefs = _extract_layover_flight_preferences(t)
+    if layover_prefs:
+        flight_preferences.extend(p for p in layover_prefs if p not in flight_preferences)
     if flight_preferences:
         brief["flight_preferences"] = flight_preferences
 
@@ -332,11 +477,14 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             brief.setdefault("passports_notes", [])
             brief["passports_notes"].append("проверить срок действия загранпаспорта")
 
-    if "шенген" in t or "шэнген" in t or "франц" in t:
+    france_visa_context = "франц" in t and not brief_stay_enrich._country_in_comparison_context(
+        t, "франц"
+    )
+    if "шенген" in t or "шэнген" in t or france_visa_context:
         brief.setdefault("visa_notes", [])
         brief.setdefault("documents_discussed", True)
         brief.setdefault("visa_required", True)
-        if "франц" in t:
+        if france_visa_context:
             brief["visa_notes"].append("направление/виза: Франция (Шенген)")
         elif "шенген" in t or "шэнген" in t:
             brief["visa_notes"].append("виза: Шенген")
@@ -383,7 +531,9 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             b.setdefault("constraints", []).append("без длинных пересадок")
         if "море" in t or "пляж" in t:
             b.setdefault("wants", []).append("на море")
-    if "франц" in t or "во францию" in t:
+    if ("франц" in t or "во францию" in t) and not brief_stay_enrich._country_in_comparison_context(
+        t, "франц"
+    ):
         me = ensure_party("организатор")
         me.setdefault("wants", []).append("Франция")
     if re.search(r"друг\w*\s+отел", t) or "в другом отел" in t:
@@ -588,8 +738,14 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                 continue
             out.setdefault("months", [])
             for item in v:
-                if item not in out["months"]:
-                    out["months"].append(item)
+                norm = _normalize_month_token(str(item))
+                if norm and norm not in out["months"]:
+                    out["months"].append(norm)
+            continue
+        if k in {"destination_primary", "destination_alternatives"}:
+            if _is_empty_brief_value(v):
+                continue
+            out[k] = v
             continue
         if k in {"visa_notes", "constraints_notes", "activity_preferences", "flight_preferences"}:
             if _is_empty_brief_value(v):
@@ -636,42 +792,35 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
     return out
 
 
+_PARTICIPANT_GROUP_LIST_FIELDS = frozenset(
+    {"flight_preferences", "constraints_notes", "passports_notes", "visa_notes"}
+)
+
+
 def merge_participant_into_brief(
     base: Dict[str, Any],
     incoming: Dict[str, Any],
     participant_name: str,
 ) -> Dict[str, Any]:
+    """Вклад участника — в participant_preferences; в общий бриф только перелёт/ограничения."""
     out = dict(base or {})
-    immutable_if_set = {
-        "budget_rub_max",
-        "adults",
-        "kids_count",
-        "kid_age",
-        "months",
-        "date_range_raw",
-        "flight_hours_max",
-        "visa_required",
-        "visa_status",
-        "passports_status",
-        "climate",
-        "trip_type",
-    }
-
     for k, v in (incoming or {}).items():
-        if v is None:
+        if v is None or k in {"context_raw", "trip_title", "participant_name"}:
             continue
-        if k in {"months", "visa_notes", "constraints_notes", "passports_notes", "activity_preferences"}:
+        if k not in _PARTICIPANT_GROUP_LIST_FIELDS:
+            continue
+        if k in {"passports_notes", "visa_notes", "constraints_notes", "flight_preferences"}:
+            if _is_empty_brief_value(v):
+                continue
             out.setdefault(k, [])
             for item in v:
-                if item not in out[k]:
-                    out[k].append(item)
+                text = str(item).strip()
+                if text and text not in out[k]:
+                    out[k].append(text)
             continue
-        if k in immutable_if_set and k in out and out.get(k):
-            continue
-        out[k] = v
 
     out.setdefault("participant_preferences", {})
-    out["participant_preferences"][participant_name] = incoming
+    out["participant_preferences"][participant_name] = dict(incoming or {})
     return out
 
 
@@ -751,6 +900,7 @@ def parse_message_to_brief(
         LAST_PARSER_MODE = "rules_only"
 
     flat = merge_brief(rule_based, llm_flat)
+    _finalize_brief_from_text(flat, text)
     brief_display.sync_trip_title(flat)
     return flat, structured
 

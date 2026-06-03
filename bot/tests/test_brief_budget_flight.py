@@ -61,7 +61,7 @@ def test_flight_clarify_does_not_wipe_existing_brief() -> None:
     )
     assert merged.get("adults") == 2
     assert merged.get("budget_rub_max") == 300_000
-    assert "июл" in (merged.get("months") or [])
+    assert "июль" in (merged.get("months") or [])
     assert merged.get("transfers_allowed") is True
     assert "эконом" in (merged.get("flight_preferences") or [])
 

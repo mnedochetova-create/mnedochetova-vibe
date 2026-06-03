@@ -310,11 +310,23 @@ def organizer_structured_to_flat(data: Dict[str, Any]) -> Dict[str, Any]:
             out["kid_age"] = int(ages)
 
     dest_label = _direction_label(facts.get("destination"))
-    if dest_label:
+    primary_label = _direction_label(facts.get("destination_primary")) or dest_label
+    if primary_label:
+        out["destination_primary"] = primary_label
         out.setdefault("activity_preferences", [])
-        pref = f"предпочтение по направлению: {dest_label}"
+        pref = f"предпочтение по направлению: {primary_label}"
         if pref not in out["activity_preferences"]:
             out["activity_preferences"].append(pref)
+
+    alts_raw = _unwrap(facts.get("destination_alternatives"))
+    if isinstance(alts_raw, list) and alts_raw:
+        alts = [str(a).strip() for a in alts_raw if not _is_empty(a)]
+        if alts:
+            out["destination_alternatives"] = alts
+    elif dest_label and primary_label and dest_label != primary_label:
+        out.setdefault("destination_alternatives", [])
+        if dest_label not in out["destination_alternatives"]:
+            out["destination_alternatives"].append(dest_label)
 
     dest_raw = facts.get("destination_raw")
     if dest_raw is not None and not _is_empty(_unwrap(dest_raw)):

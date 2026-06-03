@@ -73,14 +73,91 @@ _TRIP_STYLE_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
 ]
 
 
+def _country_in_layover_context(t: str, stem: str) -> bool:
+    """Страна в контексте пересадки/транзита — не направление отдыха."""
+    if stem not in t:
+        return False
+    if not re.search(r"(?:пересадк|стыковк|транзит|остановк|layover|stopover)", t):
+        return False
+    if re.search(rf"(?:пересадк|стыковк|транзит|остановк)\w*.{{0,60}}?\bв\s+\w*{stem}", t):
+        return True
+    if re.search(rf"\bв\s+\w*{stem}\w*.{{0,50}}?(?:пересад|аэропорт|отел|поспать|сон)", t):
+        return True
+    return False
+
+
+def _country_in_comparison_context(t: str, stem: str) -> bool:
+    """Страна в сравнении/варианте («италия?», «с чем совместить») — не основное направление."""
+    if stem not in t:
+        return False
+    if re.search(r"совмест\w*", t):
+        if re.search(rf"\b{stem}\w*\s*\?", t):
+            return True
+        if re.search(rf"\?\s*[^.?]*\b{stem}", t):
+            return True
+    if re.search(r"посмотреть\s+максим", t) and re.search(rf"\b{stem}\w*\s*\?", t):
+        return True
+    if re.search(rf"\b{stem}\w*\s*\?", t) and re.search(r"\?", t):
+        return True
+    return False
+
+
+def is_comparison_mode(t: str) -> bool:
+    """Несколько направлений: пользователь сравнивает или выбирает комбо."""
+    if re.search(r"совмест\w*", t):
+        return True
+    if re.search(r"посмотреть\s+максим", t) and re.search(r"\?", t):
+        return True
+    country_hits = sum(1 for stem, _name, _ in DESTINATION_HINTS if stem in t)
+    return country_hits >= 2 and bool(re.search(r"\?", t))
+
+
 def _detect_destinations(t: str) -> List[Tuple[str, str]]:
     found: List[Tuple[str, str]] = []
     seen: set[str] = set()
     for stem, name, default_climate in DESTINATION_HINTS:
         if stem in t and name not in seen:
+            if _country_in_layover_context(t, stem):
+                continue
+            if is_comparison_mode(t) and _country_in_comparison_context(t, stem):
+                continue
             found.append((name, default_climate))
             seen.add(name)
     return found
+
+
+def destinations_with_roles(t: str) -> tuple[Optional[str], List[str]]:
+    """Основное направление и альтернативы при сравнении маршрутов."""
+    ordered: List[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for stem, name, _climate in DESTINATION_HINTS:
+        if stem not in t or name in seen:
+            continue
+        if _country_in_layover_context(t, stem):
+            continue
+        ordered.append((t.find(stem), name, stem))
+        seen.add(name)
+    ordered.sort(key=lambda x: x[0])
+    if not ordered:
+        return None, []
+
+    if not is_comparison_mode(t):
+        names = [x[1] for x in ordered]
+        return names[0], names[1:]
+
+    primary: Optional[str] = None
+    alternatives: List[str] = []
+    for _pos, name, stem in ordered:
+        if _country_in_comparison_context(t, stem):
+            alternatives.append(name)
+        elif primary is None:
+            primary = name
+        else:
+            alternatives.append(name)
+    if primary is None and ordered:
+        primary = ordered[0][1]
+        alternatives = [x[1] for x in ordered[1:] if x[1] != primary]
+    return primary, alternatives
 
 
 def _detect_cities(t: str) -> List[Tuple[str, List[str]]]:
@@ -251,16 +328,33 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     for label, tags in _detect_regions(t):
         _append_unique(setting, [label] + tags)
 
+    primary = brief.get("destination_primary")
+    alternatives = brief.get("destination_alternatives") or []
     destinations = _detect_destinations(t)
-    for name, default_climate in destinations:
-        _append_unique(setting, [name])
-        for part in default_climate.replace(" и ", "/").split("/"):
-            part = part.strip()
-            if part:
-                _append_unique(setting, [part])
+    if primary:
+        _append_unique(setting, [str(primary)])
+        for _name, default_climate in destinations:
+            if _name == primary:
+                for part in default_climate.replace(" и ", "/").split("/"):
+                    part = part.strip()
+                    if part:
+                        _append_unique(setting, [part])
+                break
+    else:
+        for name, default_climate in destinations:
+            _append_unique(setting, [name])
+            for part in default_climate.replace(" и ", "/").split("/"):
+                part = part.strip()
+                if part:
+                    _append_unique(setting, [part])
 
     for label in _direction_labels_from_brief(brief):
-        _append_unique(setting, [label])
+        if primary and label == primary:
+            _append_unique(setting, [label])
+        elif not primary:
+            _append_unique(setting, [label])
+        elif label not in alternatives:
+            _append_unique(setting, [label])
 
     if "море" in t or "пляж" in t or "у моря" in t or "на море" in t or "на берегу" in t:
         _append_unique(setting, ["море", "пляж"])
@@ -349,7 +443,11 @@ def _activity_phrase(se: Dict[str, Any], brief: Dict[str, Any]) -> str:
     return "отдых по вашим вводным"
 
 
-def _headline_place(se: Dict[str, Any]) -> Optional[str]:
+def _headline_place(se: Dict[str, Any], brief: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    if brief and brief.get("destination_primary"):
+        name = str(brief["destination_primary"]).strip()
+        if name:
+            return f"В {name}"
     settings = [str(s).strip() for s in (se.get("setting") or []) if str(s).strip()]
     for tag in settings:
         if "юг" in tag.lower() and "франц" in tag.lower():
@@ -389,7 +487,7 @@ def format_stay_experience_display(brief: Dict[str, Any], *, escape_html: bool =
         return html_module.escape(value) if escape_html else value
 
     se = brief.get("stay_experience") if isinstance(brief.get("stay_experience"), dict) else {}
-    place = _headline_place(se)
+    place = _headline_place(se, brief)
     period = _period_phrase(brief)
     activities = _activity_phrase(se, brief)
 
