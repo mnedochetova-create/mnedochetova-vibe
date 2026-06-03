@@ -1486,7 +1486,6 @@ def format_brief_unified(
             if row:
                 lines.append(f"• <b>{esc(name)}</b>: " + " · ".join(row))
 
-    lines.append(f"\n<i>build: {html.escape(ui_feedback.BOT_UI_VERSION)}</i>")
     return "\n".join(lines)
 
 
