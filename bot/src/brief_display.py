@@ -12,6 +12,12 @@ import re
 from typing import Any, Callable, Dict, List, Optional
 
 import brief_stay_enrich
+from brief_transport import (
+    format_flight_display,
+    format_transport_display,
+    transport_field_icon,
+    transport_field_label,
+)
 
 _CURRENCY_SYMBOLS = {
     "EUR": "€",
@@ -114,43 +120,6 @@ def format_budget_display(brief: Dict[str, Any]) -> str:
         return f"{prefix}{brief['budget_rub_max']:,} ₽".replace(",", " ")
     if brief.get("budget_flexible"):
         return "гибкий"
-    return "—"
-
-
-def _flight_is_missing(brief: Dict[str, Any], missing: Optional[List[str]]) -> bool:
-    if missing:
-        return any(str(item).startswith("Перелёт") for item in missing)
-    return not (
-        brief.get("flight_hours_max")
-        or brief.get("flight_hours_unrestricted")
-        or "transfers_allowed" in brief
-        or brief.get("flight_preferences")
-    )
-
-
-def format_flight_display(
-    brief: Dict[str, Any],
-    *,
-    esc: Optional[Callable[[Any], str]] = None,
-    missing: Optional[List[str]] = None,
-) -> str:
-    esc_fn = esc if callable(esc) else (lambda value: value)
-    parts: List[str] = []
-    if brief.get("flight_hours_max"):
-        parts.append(f"до {esc_fn(brief['flight_hours_max'])} ч.")
-    elif brief.get("flight_hours_unrestricted"):
-        parts.append("без ограничений по длительности")
-    if brief.get("transfers_allowed") is True:
-        parts.append("пересадки допустимы")
-    elif brief.get("transfers_allowed") is False:
-        parts.append("прямой рейс")
-    prefs = brief.get("flight_preferences") or []
-    if prefs:
-        parts.append(", ".join(esc_fn(str(item)) for item in prefs))
-    if parts:
-        return " · ".join(parts)
-    if _flight_is_missing(brief, missing):
-        return "нужно указать: прямой или с пересадками, класс (эконом/бизнес)"
     return "—"
 
 

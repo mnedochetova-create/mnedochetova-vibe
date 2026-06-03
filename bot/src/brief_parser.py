@@ -6,6 +6,7 @@ import brief_flat_mapper
 import brief_pipeline
 import brief_display
 import brief_stay_enrich
+import brief_transport
 from parser_mode import role_llm_active
 
 
@@ -139,6 +140,121 @@ def _apply_destination_roles(t: str, brief: Dict[str, Any]) -> None:
     _strip_comparison_visa_and_party(t, brief)
 
 
+def _extract_domestic_route(t: str, brief: Dict[str, Any]) -> None:
+    """Маршрут по России: области, must-visit, наземный сценарий."""
+    regions: List[str] = []
+    for stem, label, _tags in brief_stay_enrich.REGION_HINTS:
+        if stem in ("центральн",):
+            continue
+        if stem in t and "област" in t and label not in regions:
+            regions.append(label)
+    m = re.search(r"центральн\w*\s+росси", t)
+    if m:
+        pref = "предпочтение по направлению: Центральная Россия"
+        brief.setdefault("activity_preferences", [])
+        if pref not in brief["activity_preferences"]:
+            brief["activity_preferences"].append(pref)
+
+    must_visit: List[str] = []
+    for stem, label, _tags in brief_stay_enrich.CITY_HINTS:
+        if stem in ("палех", "гороховец", "дивеев") and stem in t:
+            must_visit.append(label)
+    if must_visit:
+        brief["must_visit_places"] = must_visit
+        prefs = brief.get("activity_preferences") or []
+        brief["activity_preferences"] = [
+            p
+            for p in prefs
+            if not (
+                str(p).lower().startswith("предпочтение по направлению:")
+                and str(p).split(":", 1)[-1].strip() in must_visit
+            )
+        ]
+
+    if regions:
+        brief["regions"] = regions
+        se = dict(brief.get("stay_experience") or {})
+        setting = list(se.get("setting") or [])
+        for r in regions:
+            if r not in setting:
+                setting.append(r)
+        for place in must_visit:
+            if place not in setting:
+                setting.append(place)
+        if setting:
+            se["setting"] = setting
+            brief["stay_experience"] = se
+
+    if (
+        regions
+        or must_visit
+        or re.search(r"росси|област\w*|по\s+городам|путешеств", t)
+    ):
+        brief["trip_transport"] = brief_transport.TRIP_TRANSPORT_GROUND
+        if re.search(r"путешеств|по\s+городам|экскурс", t):
+            brief["trip_type"] = "автопутешествие / региональный тур"
+
+    if re.search(r"домик|коттедж|гостев", t) and (
+        "кухн" in t or "уедин" in t or "необычн" in t
+    ):
+        se = dict(brief.get("stay_experience") or {})
+        acc = list(se.get("accommodation_style") or [])
+        for label in ("домик с кухней", "уединённое размещение"):
+            if label not in acc:
+                acc.append(label)
+        if acc:
+            se["accommodation_style"] = acc
+            brief["stay_experience"] = se
+
+
+def _ground_travel_context(t: str, brief: Dict[str, Any]) -> bool:
+    if brief.get("trip_transport") == brief_transport.TRIP_TRANSPORT_GROUND:
+        return True
+    if re.search(r"без\s+перел|на\s+авто|автомобил|автопутешеств", t):
+        return True
+    return brief_transport.is_domestic_russia_context(t, brief)
+
+
+def _apply_ground_transport_signals(t: str, brief: Dict[str, Any]) -> None:
+    if re.search(r"без\s+перел", t):
+        brief["flight_not_needed"] = True
+        brief["trip_transport"] = brief_transport.TRIP_TRANSPORT_GROUND
+        brief.setdefault("ground_transport_notes", [])
+        note = "перелёт не планируется"
+        if note not in brief["ground_transport_notes"]:
+            brief["ground_transport_notes"].append(note)
+    if re.search(r"на\s+авто|автомобил|автопутешеств|на\s+машин", t):
+        brief["trip_transport"] = brief_transport.TRIP_TRANSPORT_GROUND
+        brief.setdefault("ground_transport_notes", [])
+        if "автомобиль" not in brief["ground_transport_notes"]:
+            brief["ground_transport_notes"].append("автомобиль")
+
+
+def _parse_travel_hours_limit(t: str, brief: Dict[str, Any]) -> None:
+    m = re.search(r"(?:до|не\s*больше|не\s*более)\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b", t)
+    if not m:
+        m = re.search(
+            r"(?:перел[её]?т|пол[её]т)\s*(?:до|не\s*больше|не\s*более)?\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b",
+            t,
+        )
+    if not m:
+        m = re.search(
+            r"(\d{1,2})\s*(?:ч|час(?:ов|а)?)\s*(?:максимум|макс|не\s*больше)(?:\s*на\s*(?:перел[её]т|пол[её]т))?",
+            t,
+        )
+    if not m:
+        return
+    hours = int(m.group(1))
+    flight_ctx = bool(
+        re.search(r"перел[её]т|авиа|рейс|вылет", t) and not re.search(r"без\s+перел", t)
+    )
+    if _ground_travel_context(t, brief) and not flight_ctx:
+        brief["drive_hours_max"] = hours
+        brief.pop("flight_hours_max", None)
+    else:
+        brief["flight_hours_max"] = hours
+
+
 def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
     t = (text or "").lower()
     if brief.get("months"):
@@ -149,6 +265,9 @@ def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
                 seen.append(m)
         brief["months"] = seen
     _apply_destination_roles(t, brief)
+    _extract_domestic_route(t, brief)
+    brief_transport.sync_trip_transport(brief, text)
+    brief_transport.reconcile_hours_fields(brief, text)
 
 
 def _detect_destinations(t: str) -> List[Tuple[str, str]]:
@@ -190,7 +309,7 @@ def _extract_layover_flight_preferences(t: str) -> list[str]:
 
 def _money_to_rub(num: int, suffix: str) -> int:
     suffix = (suffix or "").strip()
-    if suffix in {"к", "т", "тыс", "тысяч"}:
+    if suffix in {"к", "т", "тыс", "тыщ", "тысяч"}:
         num *= 1000
     elif suffix.startswith("млн") or suffix.startswith("миллион"):
         num *= 1_000_000
@@ -260,7 +379,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
 
     m_budget_range = re.search(
         r"бюджет(?:ом)?\s*(?:до\s*)?(\d[\d\s]{1,8})\s*[-–]\s*(\d[\d\s]{1,8})\s*"
-        r"(к|т|тыс|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
+        r"(к|т|тыс|тыщ|тысяч|млн|миллион[а-я]*|000|руб|₽)?",
         t,
     )
     if not m_budget_range:
@@ -377,19 +496,9 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
             if m:
                 brief["trip_duration_days_raw"] = f"{m.group(1)} дней"
 
-    m = re.search(r"(?:до|не\s*больше|не\s*более)\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b", t)
-    if not m:
-        m = re.search(
-            r"(?:перел[её]?т|пол[её]т)\s*(?:до|не\s*больше|не\s*более)?\s*(\d{1,2})\s*(?:ч|час(?:ов|а)?)\b",
-            t,
-        )
-    if not m:
-        m = re.search(
-            r"(\d{1,2})\s*(?:ч|час(?:ов|а)?)\s*(?:максимум|макс|не\s*больше)(?:\s*на\s*(?:перел[её]?т|пол[её]т))?",
-            t,
-        )
-    if m:
-        brief["flight_hours_max"] = int(m.group(1))
+    _apply_ground_transport_signals(t, brief)
+    _extract_domestic_route(t, brief)
+    _parse_travel_hours_limit(t, brief)
 
     if (
         "можно с пересад" in t
@@ -742,10 +851,24 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
                 if norm and norm not in out["months"]:
                     out["months"].append(norm)
             continue
-        if k in {"destination_primary", "destination_alternatives"}:
+        if k in {
+            "destination_primary",
+            "destination_alternatives",
+            "trip_transport",
+            "flight_not_needed",
+            "drive_hours_max",
+        }:
             if _is_empty_brief_value(v):
                 continue
             out[k] = v
+            continue
+        if k in {"regions", "must_visit_places", "ground_transport_notes"}:
+            if _is_empty_brief_value(v):
+                continue
+            out.setdefault(k, [])
+            for item in v:
+                if item not in out[k]:
+                    out[k].append(item)
             continue
         if k in {"visa_notes", "constraints_notes", "activity_preferences", "flight_preferences"}:
             if _is_empty_brief_value(v):
@@ -847,27 +970,23 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append("Бюджет (хотя бы «до … ₽/€/$» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
-    flight_block_ok = (
-        bool(brief.get("flight_hours_max"))
-        or ("transfers_allowed" in brief)
-        or bool(brief.get("flight_hours_unrestricted"))
-        or bool(brief.get("flight_preferences"))
-    )
-    if not flight_block_ok:
-        if _has_destination_hint(brief):
-            missing.append(
-                "Перелёт: прямой или с пересадками, класс (эконом/бизнес) — можно своими словами"
+    if not brief_transport.transport_block_ok(brief):
+        missing.append(
+            brief_transport.transport_missing_hint(
+                brief, has_destination=_has_destination_hint(brief)
             )
-        else:
-            missing.append(
-                "Перелёт (например, «до 5 часов», «прямой, эконом» или «пересадки допустимы»)"
-            )
+        )
     # Визы/документы: извлекаем в бриф, но на этапе MVP не спрашиваем отдельно (PARSING_SPEC P3).
     if not brief_stay_enrich.stay_experience_sufficient(brief):
         missing.append(
             "Сценарий отдыха (море, горы, спокойный отель — можно своими словами)"
         )
     return missing
+
+
+def _is_completion_only_message(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in {"готово", "всё", "все", "ок", "готов", "готова", "done"}
 
 
 def parse_message_to_brief(
@@ -881,6 +1000,8 @@ def parse_message_to_brief(
     Возвращает (плоский дельта-бриф, structured JSON или {}).
     """
     global LAST_PARSER_MODE
+    if _is_completion_only_message(text):
+        return {}, {}
     rule_based = extract_brief_rule_based(text)
     structured: Dict[str, Any] = {}
     llm_flat: Dict[str, Any] = {}
@@ -901,6 +1022,9 @@ def parse_message_to_brief(
 
     flat = merge_brief(rule_based, llm_flat)
     _finalize_brief_from_text(flat, text)
+    dump = flat.get("organizer_dump") or ""
+    brief_transport.sync_trip_transport(flat, f"{text}\n{dump}")
+    brief_transport.reconcile_hours_fields(flat, text)
     brief_display.sync_trip_title(flat)
     return flat, structured
 
@@ -976,6 +1100,9 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
             "activity_preferences",
             "passports_notes",
             "flight_preferences",
+            "regions",
+            "must_visit_places",
+            "ground_transport_notes",
         }:
             if _is_empty_brief_value(v):
                 continue
@@ -983,6 +1110,17 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
             for item in v:
                 if item not in out[k]:
                     out[k].append(item)
+            continue
+        if k in {
+            "destination_primary",
+            "destination_alternatives",
+            "trip_transport",
+            "flight_not_needed",
+            "drive_hours_max",
+        }:
+            if _is_empty_brief_value(v):
+                continue
+            out[k] = v
             continue
         if k == "climate":
             if _is_empty_brief_value(v):

@@ -43,6 +43,9 @@ import ui_feedback
 
 format_budget_display = brief_display.format_budget_display
 format_flight_display = brief_display.format_flight_display
+format_transport_display = brief_display.format_transport_display
+transport_field_label = brief_display.transport_field_label
+transport_field_icon = brief_display.transport_field_icon
 
 
 def setup_logging() -> None:
@@ -349,9 +352,10 @@ def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[i
     if group_parts:
         lines.append("Состав: " + ", ".join(group_parts))
 
-    flight_line = format_flight_display(brief)
-    if flight_line != "—":
-        lines.append(f"Перелёт: {flight_line}")
+    transport_line = format_transport_display(brief)
+    if transport_line != "—":
+        t_label = transport_field_label(brief)
+        lines.append(f"{t_label}: {transport_line}")
 
     if brief.get("trip_duration_days_raw"):
         lines.append(f"Длительность: {brief['trip_duration_days_raw']}")
@@ -1340,8 +1344,10 @@ def format_brief_unified(
         group_value = "—"
     core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
+    t_label = transport_field_label(brief)
+    t_icon = transport_field_icon(brief)
     core_facts.append(
-        f"✈️ <b>Перелёт:</b> {esc(format_flight_display(brief, esc=esc, missing=missing))}"
+        f"{t_icon} <b>{esc(t_label)}:</b> {esc(format_transport_display(brief, esc=esc, missing=missing))}"
     )
     duration_value = esc(brief_display.normalize_duration_display(brief.get("trip_duration_days_raw")))
     core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
@@ -1352,6 +1358,13 @@ def format_brief_unified(
     brief_stay_enrich.enrich_stay_from_context(brief)
     scenario_value = esc(brief_stay_enrich.format_stay_experience_display(brief)) or "—"
     style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
+
+    regions = brief.get("regions") or []
+    if regions:
+        style_facts.append(f"🗺 <b>Регионы:</b> {', '.join(esc(str(r)) for r in regions)}")
+    must_visit = brief.get("must_visit_places") or []
+    if must_visit:
+        style_facts.append(f"📍 <b>Обязательно:</b> {', '.join(esc(str(m)) for m in must_visit)}")
 
     directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
     alts = brief.get("destination_alternatives") or []
