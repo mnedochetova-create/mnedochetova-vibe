@@ -1387,6 +1387,8 @@ def format_brief_unified(
     duration_value = esc(brief_domestic_route.format_duration_display(brief))
     core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
 
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        brief_domestic_route.apply_domestic_documents_defaults(brief)
     passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
     core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
 

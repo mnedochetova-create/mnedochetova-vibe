@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-06-05-domestic-retest
+ENV BOT_UI_VERSION=2026-06-05-domestic-dedup
 
 WORKDIR /app
 

@@ -54,10 +54,14 @@ def test_olga_card_from_stale_storage_with_dump() -> None:
     assert "≈14" in text
     assert "🏡" in text and "Проживание" in text
     assert "домик" in text.lower() or "кухн" in text.lower()
+    assert text.lower().count("домик с кухней") <= 1
+    assert "не требуются" in text.lower()
+    assert "≈14" in text
     assert "🗺" not in text or "Регионы:" not in text
     assert "👥" not in text or "Группа:" not in text
     assert "Москва" not in text
     assert event["brief"].get("trip_title", "").startswith("Автопутешествие")
+    assert "Сценарий" not in text or text.count("🏡") == 1
 
 
 def test_olga_card_without_dump_uses_context_raw() -> None:

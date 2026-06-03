@@ -107,6 +107,71 @@ def _extract_accommodation_phrase(text: str) -> str:
     return ""
 
 
+_PLACEHOLDER_VALUES = frozenset(
+    {
+        "не указано",
+        "не указан",
+        "неизвестно",
+        "—",
+        "-",
+        "н/д",
+        "n/a",
+    }
+)
+
+
+def _is_placeholder_value(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return not text or text in _PLACEHOLDER_VALUES
+
+
+def consolidate_accommodation_styles(items: List[str]) -> List[str]:
+    """Один смысл — одна строка для карточки (без повторов домик/кухня)."""
+    raw = [str(x).strip() for x in items if str(x).strip()]
+    if not raw:
+        return []
+
+    blob = " ".join(raw).lower()
+    phrase_hit = next(
+        (x for x in raw if len(x) > 24 and ("проживан" in x.lower() or "домик" in x.lower())),
+        None,
+    )
+    if phrase_hit:
+        return [phrase_hit]
+
+    parts: List[str] = []
+    if "домик" in blob or "коттедж" in blob:
+        if "кухн" in blob:
+            parts.append("необычные уединённые домики с кухней")
+        else:
+            parts.append("необычные уединённые домики")
+    elif "уедин" in blob or "необычн" in blob:
+        parts.append("уединённое размещение")
+    if not parts:
+        return [raw[0]]
+    return parts
+
+
+def apply_domestic_documents_defaults(brief: Dict[str, Any]) -> None:
+    """Внутри России загран и виза обычно не актуальны, если не сказано иное."""
+    if not is_domestic_auto_brief(brief):
+        return
+    if not brief.get("passports_status") and not brief.get("passports_notes"):
+        brief["passports_status"] = "не требуются"
+    if "visa_required" not in brief:
+        brief["visa_required"] = False
+
+
+def normalize_accommodation_in_brief(brief: Dict[str, Any]) -> None:
+    se = brief.get("stay_experience")
+    if not isinstance(se, dict):
+        return
+    acc = consolidate_accommodation_styles(se.get("accommodation_style") or [])
+    if acc:
+        se["accommodation_style"] = acc
+        brief["stay_experience"] = se
+
+
 def ensure_accommodation_from_context(brief: Dict[str, Any]) -> None:
     se = brief.get("stay_experience")
     if not isinstance(se, dict):
@@ -208,6 +273,8 @@ def prepare_brief_for_display(
     if is_domestic_auto_brief(brief):
         apply_domestic_cleanup(brief)
         ensure_accommodation_from_context(brief)
+        normalize_accommodation_in_brief(brief)
+        apply_domestic_documents_defaults(brief)
         import brief_display
 
         brief_display.sync_trip_title(brief)
@@ -228,10 +295,12 @@ def format_dates_display(brief: Dict[str, Any]) -> str:
 
 def format_duration_display(brief: Dict[str, Any]) -> str:
     explicit = brief.get("trip_duration_days_raw")
-    if explicit:
+    if explicit and not _is_placeholder_value(explicit):
         from brief_display import normalize_duration_display
 
-        return normalize_duration_display(explicit)
+        normalized = normalize_duration_display(explicit)
+        if not _is_placeholder_value(normalized):
+            return normalized
 
     dr = format_dates_display(brief)
     m = re.search(r"(\d{1,2})\s*[-–]\s*(\d{1,2})", dr)
@@ -286,10 +355,6 @@ def format_domestic_scenario(brief: Dict[str, Any]) -> str:
             activity_bits.append("максимум впечатлений")
             break
 
-    acc = [str(a) for a in (se.get("accommodation_style") or []) if str(a).strip()]
-    if acc:
-        activity_bits.append(", ".join(acc))
-
     head = f"Автопутешествие по {reg_part}"
     if period:
         head = f"{head}, {period}"
@@ -317,10 +382,11 @@ def derive_domestic_trip_title(brief: Dict[str, Any]) -> str:
 def format_accommodation_line(brief: Dict[str, Any]) -> str:
     if is_domestic_auto_brief(brief):
         ensure_accommodation_from_context(brief)
+        normalize_accommodation_in_brief(brief)
     se = brief.get("stay_experience") if isinstance(brief.get("stay_experience"), dict) else {}
-    acc = [str(a).strip() for a in (se.get("accommodation_style") or []) if str(a).strip()]
+    acc = consolidate_accommodation_styles(se.get("accommodation_style") or [])
     if acc:
-        return ", ".join(acc)
+        return acc[0] if len(acc) == 1 else ", ".join(acc)
     for note in brief.get("constraints_notes") or []:
         low = str(note).lower()
         if "домик" in low or "кухн" in low or "уедин" in low:
