@@ -297,7 +297,8 @@ def format_invite_step_message(
         f"{head}\n\n"
         "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
         "В тексте нет <code>https://</code> — вход через @бота и <code>/start join_…</code>.\n\n"
-        "Кнопка «📤 Поделиться приглашением» пришлёт это сообщение ещё раз, если нужно."
+        "Карточка для пересылки приходит сразу ниже. Кнопка «📤 Поделиться приглашением» — "
+        "напоминание, если карточку не видно."
     )
 
 
@@ -1943,6 +1944,10 @@ async def _patch_stale_invite_messages(bot: Bot, event: Dict[str, Any]) -> None:
             logging.debug("invite forward markup patch skipped", exc_info=True)
 
 
+def invite_forward_card_already_sent(event: Dict[str, Any]) -> bool:
+    return bool((event or {}).get("invite_forward_message_id"))
+
+
 async def send_invite_forward_card(
     message: Message,
     event: Dict[str, Any],
@@ -2241,14 +2246,21 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
         )
         return
     await _patch_stale_invite_messages(callback.message.bot, event)
-    if not await send_invite_forward_card(callback.message, event):
+    if not invite_forward_card_already_sent(event):
+        if not await send_invite_forward_card(callback.message, event):
+            await callback.message.answer(
+                "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
         await callback.message.answer(
-            "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
-            reply_markup=main_menu_keyboard(),
+            "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).",
+            reply_markup=invite_waiting_keyboard(event),
         )
         return
     await callback.message.answer(
-        "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).",
+        "↗️ <b>Карточка для пересылки уже выше</b> — долгое нажатие → «Переслать».\n"
+        "Нужна новая — открой «📂 Текущая поездка».",
         reply_markup=invite_waiting_keyboard(event),
     )
 

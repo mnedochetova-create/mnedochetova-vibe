@@ -92,6 +92,12 @@ def test_invite_join_code_from_link() -> None:
     assert main.invite_join_code_from_link("https://t.me/Bot?start=join_596c75") == "596c75"
 
 
+def test_invite_forward_card_already_sent() -> None:
+    assert not main.invite_forward_card_already_sent({})
+    assert not main.invite_forward_card_already_sent({"invite_forward_message_id": 0})
+    assert main.invite_forward_card_already_sent({"invite_forward_message_id": 42})
+
+
 def test_telegram_share_url_text_only_when_used() -> None:
     from urllib.parse import parse_qs, unquote, urlparse
 
