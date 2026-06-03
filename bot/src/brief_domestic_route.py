@@ -125,6 +125,21 @@ def _is_placeholder_value(value: Any) -> bool:
     return not text or text in _PLACEHOLDER_VALUES
 
 
+def normalize_accommodation_phrase(text: str) -> str:
+    """Именительный падеж для карточки (не «в домиках…»)."""
+    low = text.lower()
+    if "домик" in low and "кухн" in low:
+        return "необычные уединённые домики с кухней"
+    if "домик" in low or "коттедж" in low:
+        return "необычные уединённые домики"
+    if "уедин" in low or "необычн" in low:
+        return "уединённое размещение"
+    cleaned = text.strip()
+    if cleaned and cleaned[0].islower():
+        return cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
 def consolidate_accommodation_styles(items: List[str]) -> List[str]:
     """Один смысл — одна строка для карточки (без повторов домик/кухня)."""
     raw = [str(x).strip() for x in items if str(x).strip()]
@@ -132,24 +147,38 @@ def consolidate_accommodation_styles(items: List[str]) -> List[str]:
         return []
 
     blob = " ".join(raw).lower()
-    phrase_hit = next(
-        (x for x in raw if len(x) > 24 and ("проживан" in x.lower() or "домик" in x.lower())),
-        None,
-    )
-    if phrase_hit:
-        return [phrase_hit]
+    return [normalize_accommodation_phrase(blob)]
 
-    parts: List[str] = []
-    if "домик" in blob or "коттедж" in blob:
-        if "кухн" in blob:
-            parts.append("необычные уединённые домики с кухней")
-        else:
-            parts.append("необычные уединённые домики")
-    elif "уедин" in blob or "необычн" in blob:
-        parts.append("уединённое размещение")
-    if not parts:
-        return [raw[0]]
-    return parts
+
+def region_to_prepositional(region: str) -> str:
+    text = str(region).strip()
+    if text.endswith("ая область"):
+        return text[: -len("ая область")] + "ой"
+    return text
+
+
+def regions_display_phrase(regions: List[str]) -> str:
+    """«по Ивановской, Владимирской и Нижегородской областям»."""
+    labels = [region_to_prepositional(r) for r in regions if str(r).strip()]
+    if not labels:
+        return "центральной России"
+    if len(labels) == 1:
+        return f"{labels[0]} области"
+    if len(labels) == 2:
+        return f"{labels[0]} и {labels[1]} областям"
+    return f"{', '.join(labels[:-1])} и {labels[-1]} областям"
+
+
+def apply_domestic_transport_defaults(brief: Dict[str, Any]) -> None:
+    """Наземный маршрут по регионам: по умолчанию автомобиль, без вопроса про перелёт."""
+    if not is_domestic_auto_brief(brief):
+        return
+    brief_transport.sync_trip_transport(brief, _raw_context_text(brief))
+    notes = [str(n).strip() for n in (brief.get("ground_transport_notes") or []) if str(n).strip()]
+    if not any("автомобил" in n.lower() for n in notes):
+        notes.insert(0, "автомобиль")
+    brief["ground_transport_notes"] = notes
+    brief["flight_not_needed"] = True
 
 
 def apply_domestic_documents_defaults(brief: Dict[str, Any]) -> None:
@@ -272,6 +301,7 @@ def prepare_brief_for_display(
     normalize_brief_stay_settings(brief)
     if is_domestic_auto_brief(brief):
         apply_domestic_cleanup(brief)
+        apply_domestic_transport_defaults(brief)
         ensure_accommodation_from_context(brief)
         normalize_accommodation_in_brief(brief)
         apply_domestic_documents_defaults(brief)
@@ -339,8 +369,7 @@ def format_domestic_scenario(brief: Dict[str, Any]) -> str:
             if "област" in str(s).lower()
         ]
 
-    period = format_dates_display(brief)
-    reg_part = regions_short_list(regions)
+    reg_part = regions_display_phrase(regions)
 
     activity_bits: List[str] = []
     trip_type = str(brief.get("trip_type") or "").lower()
@@ -356,8 +385,6 @@ def format_domestic_scenario(brief: Dict[str, Any]) -> str:
             break
 
     head = f"Автопутешествие по {reg_part}"
-    if period:
-        head = f"{head}, {period}"
     if activity_bits:
         return f"{head} — {' · '.join(activity_bits)}."
     return f"{head}."

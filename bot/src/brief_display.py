@@ -122,7 +122,7 @@ def format_budget_display(brief: Dict[str, Any]) -> str:
         return f"{prefix}{brief['budget_rub_max']:,} ₽".replace(",", " ")
     if brief.get("budget_flexible"):
         return "гибкий"
-    return "—"
+    return "не указан"
 
 
 def _vo_v_accusative(place: str) -> str:

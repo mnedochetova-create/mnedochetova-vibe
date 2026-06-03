@@ -997,12 +997,19 @@ def merge_organizer_incoming(
 
 
 def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
+    import brief_domestic_route
+
     brief_stay_enrich.enrich_stay_from_context(brief)
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        brief_domestic_route.prepare_brief_for_display(brief)
     missing: list[str] = []
     if not brief.get("months") and not brief.get("date_range_raw"):
         missing.append("Окна дат (месяц/период) или гибкость")
     if not budget_is_set(brief):
-        missing.append("Бюджет (хотя бы «до … ₽/€/$» или «бюджет гибкий»)")
+        if brief_domestic_route.is_domestic_auto_brief(brief):
+            missing.append("Бюджет: до … ₽ или «пока гибко»")
+        else:
+            missing.append("Бюджет (хотя бы «до … ₽/€/$» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
     if not brief_route_combo.is_route_combo_planning(brief) and not brief_transport.transport_block_ok(

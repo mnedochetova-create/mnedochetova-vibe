@@ -95,12 +95,18 @@ def transport_field_icon(brief: Dict[str, Any], text: str = "") -> str:
 
 
 def transport_block_ok(brief: Dict[str, Any], text: str = "") -> bool:
+    import brief_domestic_route
+
+    if brief_domestic_route.is_domestic_auto_brief(brief):
+        brief_domestic_route.apply_domestic_transport_defaults(brief)
     mode = infer_trip_transport(brief, text)
     if mode == TRIP_TRANSPORT_GROUND:
+        notes = brief.get("ground_transport_notes") or []
+        if any("автомобил" in str(n).lower() for n in notes):
+            return True
         return bool(
             brief.get("drive_hours_max")
             or brief.get("flight_not_needed")
-            or brief.get("ground_transport_notes")
             or re.search(r"на\s+авто|автомобил", _search_text(brief, text))
         )
     return bool(
@@ -112,11 +118,15 @@ def transport_block_ok(brief: Dict[str, Any], text: str = "") -> bool:
 
 
 def transport_missing_hint(brief: Dict[str, Any], *, has_destination: bool, text: str = "") -> str:
+    import brief_domestic_route
+
     label = transport_field_label(brief, text)
-    if label == "Передвижение":
+    if label == "Передвижение" and brief_domestic_route.is_domestic_auto_brief(brief):
         return (
-            f"{label}: автомобиль / без перелётов / до N часов в пути между точками — своими словами"
+            f"{label}: до N часов между точками (если важен лимит) — опционально"
         )
+    if label == "Передвижение":
+        return f"{label}: автомобиль или лимит часов в пути между точками"
     if has_destination:
         return f"{label}: прямой или с пересадками, класс (эконом/бизнес) — можно своими словами"
     return f"{label} (например, «до 5 часов», «прямой, эконом» или «пересадки допустимы»)"
@@ -180,9 +190,21 @@ def _format_ground_value(
     if brief.get("drive_hours_max"):
         parts.append(f"до {esc(brief['drive_hours_max'])} ч. в пути")
     if parts:
+        import brief_domestic_route
+
+        if (
+            brief_domestic_route.is_domestic_auto_brief(brief)
+            and len(parts) == 1
+            and parts[0] == "автомобиль"
+        ):
+            return "автомобиль (маршрут по регионам)"
         return " · ".join(parts)
     if _transport_is_missing(brief, missing, text):
-        return "нужно указать: автомобиль, «без перелётов» или лимит часов в пути"
+        import brief_domestic_route
+
+        if brief_domestic_route.is_domestic_auto_brief(brief):
+            return "автомобиль (маршрут по регионам)"
+        return "нужно указать: автомобиль или лимит часов в пути"
     return "—"
 
 

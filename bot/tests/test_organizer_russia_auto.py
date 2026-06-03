@@ -27,9 +27,9 @@ def test_olga_first_message_route_and_stay():
     assert brief.get("trip_transport") == brief_transport.TRIP_TRANSPORT_GROUND
     assert "Ивановская область" in (brief.get("regions") or [])
     assert "Палех" in (brief.get("must_visit_places") or [])
-    assert brief_parser.missing_brief_fields(brief) == [] or "Перелёт" not in str(
-        brief_parser.missing_brief_fields(brief)
-    )
+    missing = brief_parser.missing_brief_fields(brief)
+    assert not any("Перелёт" in m for m in missing)
+    assert not any("перелёт" in m.lower() for m in missing)
     assert transport_field_label(brief) == "Передвижение"
 
 

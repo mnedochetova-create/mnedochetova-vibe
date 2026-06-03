@@ -54,8 +54,12 @@ def test_olga_card_from_stale_storage_with_dump() -> None:
     assert "≈14" in text
     assert "🏡" in text and "Проживание" in text
     assert "домик" in text.lower() or "кухн" in text.lower()
+    assert "необычные уединённые домики" in text.lower()
     assert text.lower().count("домик с кухней") <= 1
     assert "не требуются" in text.lower()
+    assert "автомобиль" in text.lower()
+    assert "перелёт" not in text.lower() or "не планируется" in text.lower()
+    assert "областям" in text.lower() or "области" in text.lower()
     assert "≈14" in text
     assert "🗺" not in text or "Регионы:" not in text
     assert "👥" not in text or "Группа:" not in text
@@ -71,6 +75,15 @@ def test_olga_card_without_dump_uses_context_raw() -> None:
     text = _card(event)
     assert "🏡" in text
     assert "Автопутешествие" in text
+
+
+def test_olga_card_budget_not_set_label() -> None:
+    brief = brief_parser.extract_brief_from_text(OLGA_FIRST, role="organizer")
+    text = main.format_brief_update_message(brief, event_number=1)
+    assert "не указан" in text.lower()
+    missing = brief_parser.missing_brief_fields(brief)
+    assert any("пока гибко" in m for m in missing)
+    assert not any("перелёт" in m.lower() for m in missing)
 
 
 def test_olga_card_prepare_only_no_dump_no_context() -> None:
