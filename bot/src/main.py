@@ -1980,7 +1980,7 @@ async def show_organizer_invite_step(
         code = event_code or (await state.get_data()).get("event_code")
         event = EVENTS.get(code) if code else None
     if not event:
-        _code, event = await _organizer_event_from_state(state)
+        _code, event = await _organizer_event_from_state(state, chat_id=message.chat.id)
     if not event:
         await message.answer(
             "Сначала создай поездку через «✨ Новая поездка».",
@@ -2091,15 +2091,33 @@ async def _invite_link_for_state(state: FSMContext) -> Optional[str]:
     return event.get("invite_link")
 
 
-async def _organizer_event_from_state(state: FSMContext) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+async def _organizer_event_from_state(
+    state: FSMContext,
+    *,
+    chat_id: Optional[int] = None,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Поездка организатора: FSM, иначе последняя по chat_id (важно при MemoryStorage / нескольких репликах)."""
+    load_events()
     data = await state.get_data()
-    event_code = data.get("event_code")
-    if not event_code:
+    preferred = data.get("event_code") if isinstance(data.get("event_code"), str) else None
+    code: Optional[str] = None
+    if chat_id is not None:
+        code = resolve_organizer_event_code(chat_id, preferred)
+    elif preferred and preferred in EVENTS:
+        code = preferred
+    if not code:
         return None, None
-    event = EVENTS.get(event_code)
+    event = EVENTS.get(code)
     if not event:
         return None, None
-    return event_code, event
+    if chat_id is not None:
+        await state.update_data(
+            role="organizer",
+            event_code=code,
+            organizer_chat_id=chat_id,
+            brief=brief_parser.restore_organizer_brief_from_event(event),
+        )
+    return code, event
 
 
 async def notify_organizer_brief_ready(bot: Bot, event_code: str) -> None:
@@ -2118,7 +2136,7 @@ async def notify_organizer_brief_ready(bot: Bot, event_code: str) -> None:
 
 async def brief_confirm_prep_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event:
         await callback.message.answer("Сначала создай поездку и собери базовый бриф.")
         return
@@ -2136,7 +2154,7 @@ async def brief_confirm_prep_callback_handler(callback: CallbackQuery, state: FS
 
 async def brief_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    event_code, event = await _organizer_event_from_state(state)
+    event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event or not event_code:
         await callback.message.answer("Поездка не найдена.")
         return
@@ -2176,7 +2194,7 @@ async def brief_edit_callback_handler(callback: CallbackQuery, state: FSMContext
 
 async def brief_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event or not event.get("organizer_brief_confirmed_at"):
         await callback.message.answer(
             "Сначала подтверди бриф — тогда я подготовлю текст для пересылки.",
@@ -2188,7 +2206,7 @@ async def brief_share_callback_handler(callback: CallbackQuery, state: FSMContex
 
 async def brief_share_text_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event:
         await callback.message.answer("Поездка не найдена.")
         return
@@ -2238,7 +2256,7 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event:
         await callback.message.answer(
             "Сначала создай поездку через «✨ Новая поездка».",
@@ -2267,7 +2285,7 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("✅")
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     await ui_feedback.play_invite_sent_success(
         callback.message,
         reply_markup=invite_waiting_keyboard(event),
@@ -2276,7 +2294,7 @@ async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSM
 
 async def event_invite_done_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("Принято")
-    _event_code, event = await _organizer_event_from_state(state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     await callback.message.answer(
         "⏳ Ждём ответы участников — обновлю бриф, когда кто-то допишет пожелания.",
         reply_markup=invite_waiting_keyboard(event),
