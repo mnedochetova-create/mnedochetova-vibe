@@ -1,4 +1,4 @@
-"""Шаг приглашения: пересылка сообщения с кнопкой (без t.me/share/url в тексте)."""
+"""Шаг приглашения: пересылка текста без https:// и без t.me/share/url."""
 
 import sys
 from pathlib import Path
@@ -22,7 +22,7 @@ def test_invite_ready_keyboard_uses_forward_callback(monkeypatch) -> None:
     assert btn.url is None
 
 
-def test_invite_forward_keyboard_hides_raw_link() -> None:
+def test_invite_forward_keyboard_for_organizer_preview() -> None:
     link = "https://t.me/MyTravelLabBot?start=join_abc123"
     kb = main.invite_forward_keyboard(link)
     btn = kb.inline_keyboard[0][0]
@@ -58,13 +58,16 @@ def test_participant_join_keyboard(monkeypatch) -> None:
     assert btn.url == "https://t.me/TestBot?start=join_trip99"
 
 
-def test_build_invite_share_text_for_contacts() -> None:
-    link = "https://t.me/Bot?start=join_x"
+def test_build_invite_share_text_for_contacts(monkeypatch) -> None:
+    monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
+    link = "https://t.me/MyTravelLabBot?start=join_x"
     text = main.build_invite_share_text(link, trip_title="Во Францию с семьёй")
     assert "Привет" in text
     assert "Во Францию с семьёй" in text
-    assert "Присоединиться к поездке" in text
+    assert "@MyTravelLabBot" in text
+    assert "<code>/start join_x</code>" in text
     assert link not in text
+    assert "https://" not in text
     assert "MyTravel.Lab" in text
 
     with_link = main.build_invite_share_text(
@@ -73,15 +76,20 @@ def test_build_invite_share_text_for_contacts() -> None:
     assert with_link.endswith(link)
 
 
-def test_invite_share_text_for_event_uses_trip_title() -> None:
+def test_invite_share_text_for_event_uses_trip_title(monkeypatch) -> None:
+    monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     event = {
-        "invite_link": "https://t.me/Bot?start=join_abc",
+        "invite_link": "https://t.me/MyTravelLabBot?start=join_abc",
         "brief": {"trip_title": "Во Францию с семьёй"},
     }
     text = main.invite_share_text_for_event(event)
     assert "Во Францию с семьёй" in text
-    assert "join_abc" not in text
+    assert "join_abc" in text
     assert "https://" not in text
+
+
+def test_invite_join_code_from_link() -> None:
+    assert main.invite_join_code_from_link("https://t.me/Bot?start=join_596c75") == "596c75"
 
 
 def test_telegram_share_url_text_only_when_used() -> None:

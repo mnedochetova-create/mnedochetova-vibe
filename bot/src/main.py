@@ -167,23 +167,44 @@ def format_trip_created_organizer_message(event_number: Any) -> str:
     )
 
 
+def invite_join_code_from_link(invite_link: str) -> Optional[str]:
+    match = re.search(r"start=join_([^&\s?#]+)", invite_link or "")
+    return match.group(1) if match else None
+
+
+def build_invite_join_hint(invite_link: str) -> str:
+    """Как войти без https:// в тексте (важно при пересылке сообщения)."""
+    code = invite_join_code_from_link(invite_link)
+    if not code:
+        return ""
+    if BOT_USERNAME:
+        return (
+            f"\n\nЧтобы войти в поездку: открой @{BOT_USERNAME} и нажми Start.\n"
+            f"Если поездка не подтянулась — отправь боту:\n"
+            f"<code>/start join_{code}</code>"
+        )
+    return (
+        f"\n\nЧтобы войти в поездку, отправь боту MyTravel.Lab:\n"
+        f"<code>/start join_{code}</code>"
+    )
+
+
 def build_invite_share_text(
     invite_link: str,
     *,
     trip_title: Optional[str] = None,
     include_link: bool = False,
 ) -> str:
-    """Текст приглашения для пересылки участнику (без технической ссылки в теле)."""
+    """Текст приглашения для пересылки участнику (без https:// в теле)."""
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
     body = (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
         "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
-        "и допиши одним сообщением, что важно лично тебе.\n\n"
-        "Нажми кнопку ниже «Присоединиться к поездке» — откроется бот с этой поездкой."
+        "и допиши одним сообщением, что важно лично тебе."
     )
     if include_link:
         return f"{body}\n\n{invite_link}"
-    return body
+    return f"{body}{build_invite_join_hint(invite_link)}"
 
 
 def invite_share_text_for_event(
@@ -275,7 +296,7 @@ def format_invite_step_message(
     return (
         f"{head}\n\n"
         "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
-        "В тексте нет технической ссылки — вход по кнопке <b>Присоединиться к поездке</b>.\n\n"
+        "В тексте нет <code>https://</code> — вход через @бота и <code>/start join_…</code>.\n\n"
         "Кнопка «📤 Поделиться приглашением» пришлёт это сообщение ещё раз, если нужно."
     )
 
@@ -1895,19 +1916,50 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _patch_stale_invite_messages(bot: Bot, event: Dict[str, Any]) -> None:
+    """Заменить старые клавиатуры (t.me/share/url) на актуальные callback-кнопки."""
+    chat_id = event.get("organizer_chat_id")
+    if not chat_id:
+        return
+    instruction_id = event.get("invite_instruction_message_id")
+    if instruction_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=instruction_id,
+                reply_markup=invite_ready_keyboard(event),
+            )
+        except Exception:
+            logging.debug("invite instruction markup patch skipped", exc_info=True)
+    forward_id = event.get("invite_forward_message_id")
+    if forward_id:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=forward_id,
+                reply_markup=None,
+            )
+        except Exception:
+            logging.debug("invite forward markup patch skipped", exc_info=True)
+
+
 async def send_invite_forward_card(
     message: Message,
     event: Dict[str, Any],
 ) -> bool:
-    """Сообщение для пересылки: текст + кнопка, без https://… в теле."""
+    """Сообщение для пересылки: только текст (без url-кнопки — иначе Telegram дублирует ссылку)."""
     ensure_event_invite_link(event)
     invite_link = str(event.get("invite_link") or "").strip()
     if not invite_link:
         return False
-    await message.answer(
+    sent = await message.answer(
         invite_share_text_for_event(event),
-        reply_markup=invite_forward_keyboard(invite_link),
+        reply_markup=None,
     )
+    if sent and event.get("organizer_chat_id"):
+        event["invite_forward_message_id"] = sent.message_id
+        touch_event(event)
+        save_events()
     return True
 
 
@@ -1938,10 +1990,15 @@ async def show_organizer_invite_step(
         )
         return False
     event_number = event.get("event_number")
-    await message.answer(
+    await _patch_stale_invite_messages(message.bot, event)
+    instruction = await message.answer(
         format_invite_step_message(event_number, event=event),
         reply_markup=invite_ready_keyboard(event),
     )
+    if instruction and event.get("organizer_chat_id"):
+        event["invite_instruction_message_id"] = instruction.message_id
+        touch_event(event)
+        save_events()
     await send_invite_forward_card(message, event)
     await log_session_action(
         message.bot,
@@ -2183,6 +2240,7 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
             reply_markup=main_menu_keyboard(),
         )
         return
+    await _patch_stale_invite_messages(callback.message.bot, event)
     if not await send_invite_forward_card(callback.message, event):
         await callback.message.answer(
             "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
