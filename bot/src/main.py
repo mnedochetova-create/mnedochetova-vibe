@@ -848,6 +848,7 @@ async def _apply_organizer_brief_from_message(
         dump_text = EVENTS[event_code].get("organizer_dump")
         if isinstance(dump_text, str) and dump_text.strip():
             brief["organizer_dump"] = dump_text
+        brief = brief_parser.finalize_organizer_brief(brief)
         EVENTS[event_code]["brief"] = brief
         touch_event(EVENTS[event_code])
         save_events()

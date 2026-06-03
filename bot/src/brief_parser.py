@@ -260,6 +260,19 @@ def _parse_travel_hours_limit(t: str, brief: Dict[str, Any]) -> None:
         brief["flight_hours_max"] = hours
 
 
+def _brief_context_text(brief: Dict[str, Any], message_text: str = "") -> str:
+    parts: List[str] = []
+    if (message_text or "").strip():
+        parts.append(message_text.strip())
+    dump = brief.get("organizer_dump")
+    if isinstance(dump, str) and dump.strip():
+        parts.append(dump.strip())
+    raw = brief.get("context_raw")
+    if isinstance(raw, str) and raw.strip() and raw not in "\n".join(parts):
+        parts.append(raw.strip())
+    return "\n".join(parts)
+
+
 def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
     t = (text or "").lower()
     if brief.get("months"):
@@ -1037,12 +1050,23 @@ def parse_message_to_brief(
         LAST_PARSER_MODE = "rules_only"
 
     flat = merge_brief(rule_based, llm_flat)
-    _finalize_brief_from_text(flat, text)
-    dump = flat.get("organizer_dump") or ""
-    brief_transport.sync_trip_transport(flat, f"{text}\n{dump}")
-    brief_transport.reconcile_hours_fields(flat, text)
+    _finalize_brief_from_text(flat, _brief_context_text(flat, text))
+    ctx = _brief_context_text(flat, text)
+    brief_transport.sync_trip_transport(flat, ctx)
+    brief_transport.reconcile_hours_fields(flat, ctx)
     brief_display.sync_trip_title(flat)
     return flat, structured
+
+
+def finalize_organizer_brief(brief: Dict[str, Any]) -> Dict[str, Any]:
+    """Пересобрать выводы rules/combo по полному organizer_dump (после merge и LLM)."""
+    ctx = _brief_context_text(brief, "")
+    if ctx.strip():
+        _finalize_brief_from_text(brief, ctx)
+    brief_transport.sync_trip_transport(brief, ctx)
+    brief_transport.reconcile_hours_fields(brief, ctx)
+    brief_display.sync_trip_title(brief)
+    return brief
 
 
 def extract_brief_from_text(
@@ -1075,6 +1099,9 @@ def restore_organizer_brief_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if has_dump:
         from_dump = extract_brief_from_text(dump_text)
         brief = merge_brief(from_dump, brief)
+        if isinstance(dump_text, str):
+            brief["organizer_dump"] = dump_text
+        brief = finalize_organizer_brief(brief)
     brief_display.sync_trip_title(brief)
     return brief
 

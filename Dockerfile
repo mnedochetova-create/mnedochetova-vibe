@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-06-03-route-combo
+ENV BOT_UI_VERSION=2026-06-04-route-combo-fix
 
 WORKDIR /app
 

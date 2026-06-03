@@ -212,7 +212,14 @@ def derive_trip_title(brief: Dict[str, Any]) -> str:
 
 def sync_trip_title(brief: Dict[str, Any]) -> str:
     """Обогатить stay_experience и записать brief['trip_title']."""
+    import brief_route_combo
+
+    ctx = f"{brief.get('organizer_dump') or ''} {brief.get('context_raw') or ''}".lower()
+    if brief_route_combo.apply_route_combo_planning(ctx, brief):
+        pass
     brief_stay_enrich.enrich_stay_from_context(brief)
+    if ctx.strip() and brief_stay_enrich.is_comparison_mode(ctx):
+        brief_route_combo.apply_route_combo_planning(ctx, brief)
     title = derive_trip_title(brief)
     brief["trip_title"] = title
     return title
