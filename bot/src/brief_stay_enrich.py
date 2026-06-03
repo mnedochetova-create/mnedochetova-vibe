@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import brief_route_combo
+
 # (stem, display name, default climate for legacy backfill)
 DESTINATION_HINTS: List[Tuple[str, str, str]] = [
     ("грец", "Греция", "море/пляж"),
@@ -329,6 +331,18 @@ def enrich_stay_from_context(brief: Dict[str, Any]) -> Dict[str, Any]:
     if not brief:
         return brief
 
+    if brief_route_combo.is_route_combo_planning(brief):
+        t = _brief_search_text(brief)
+        se: Dict[str, Any] = dict(brief.get("stay_experience") or {})
+        acc = list(se.get("accommodation_style") or [])
+        for pattern, label in _ACCOMMODATION_PATTERNS:
+            if pattern.search(t):
+                _append_unique(acc, [label])
+        if acc:
+            se["accommodation_style"] = acc
+            brief["stay_experience"] = se
+        return brief
+
     t = _brief_search_text(brief)
     se: Dict[str, Any] = dict(brief.get("stay_experience") or {})
     setting: List[str] = list(se.get("setting") or [])
@@ -428,6 +442,10 @@ def _period_phrase(brief: Dict[str, Any]) -> str:
 
 
 def _activity_phrase(se: Dict[str, Any], brief: Dict[str, Any]) -> str:
+    if brief_route_combo.is_route_combo_planning(brief):
+        if brief_route_combo.wants_max_sightseeing("", brief):
+            return "максимум достопримечательностей"
+        return "планирование комбо маршрута"
     bits: List[str] = []
     styles = [str(s).lower() for s in (se.get("trip_style") or [])]
     settings = [str(s).lower() for s in (se.get("setting") or [])]
@@ -457,6 +475,8 @@ def _activity_phrase(se: Dict[str, Any], brief: Dict[str, Any]) -> str:
 
 
 def _headline_place(se: Dict[str, Any], brief: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    if brief and brief_route_combo.is_route_combo_planning(brief):
+        return "Планирование комбо"
     if brief and brief.get("destination_primary"):
         name = str(brief["destination_primary"]).strip()
         if name:

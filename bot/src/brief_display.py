@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+import brief_route_combo
 import brief_stay_enrich
 from brief_transport import (
     format_flight_display,
@@ -177,6 +178,20 @@ def _country_for_title(brief: Dict[str, Any]) -> Optional[str]:
 
 def derive_trip_title(brief: Dict[str, Any]) -> str:
     """Собрать trip_title по правилам (см. модульный docstring)."""
+    if brief_route_combo.is_route_combo_planning(brief):
+        adults = brief.get("adults")
+        period = brief.get("date_range_raw") or (
+            ", ".join(str(m) for m in (brief.get("months") or [])[:2])
+        )
+        suffix = ""
+        if isinstance(adults, int) and adults == 2:
+            suffix = " · вдвоём"
+        elif isinstance(adults, int) and adults >= 3:
+            suffix = " · с компанией"
+        if period:
+            return f"Комбо · {period}{suffix}".strip()
+        return f"Комбо · планирование маршрута{suffix}".strip()
+
     country = _country_for_title(brief)
     if not country:
         return "Новая поездка"
@@ -257,6 +272,8 @@ def filter_extra_activity_preferences(
     filtered: List[str] = []
     for raw in items:
         text = str(raw).strip()
+        if text.lower().startswith(brief_route_combo.COMBO_LINE_PREFIX):
+            continue
         if not text or _extra_item_covered_by_scenario(text, blob):
             continue
         filtered.append(text)

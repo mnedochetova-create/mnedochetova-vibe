@@ -6,6 +6,7 @@ import brief_flat_mapper
 import brief_pipeline
 import brief_display
 import brief_stay_enrich
+import brief_route_combo
 import brief_transport
 from parser_mode import role_llm_active
 
@@ -95,6 +96,10 @@ def _strip_comparison_visa_and_party(t: str, brief: Dict[str, Any]) -> None:
 
 
 def _apply_destination_roles(t: str, brief: Dict[str, Any]) -> None:
+    if brief_stay_enrich.is_comparison_mode(t):
+        _strip_comparison_visa_and_party(t, brief)
+        return
+
     primary, alternatives = brief_stay_enrich.destinations_with_roles(t)
     if not primary and not alternatives:
         return
@@ -265,6 +270,7 @@ def _finalize_brief_from_text(brief: Dict[str, Any], text: str) -> None:
                 seen.append(m)
         brief["months"] = seen
     _apply_destination_roles(t, brief)
+    brief_route_combo.apply_route_combo_planning(t, brief)
     _extract_domestic_route(t, brief)
     brief_transport.sync_trip_transport(brief, text)
     brief_transport.reconcile_hours_fields(brief, text)
@@ -854,6 +860,8 @@ def merge_brief(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
         if k in {
             "destination_primary",
             "destination_alternatives",
+            "destination_candidates",
+            "route_combo_planning",
             "trip_transport",
             "flight_not_needed",
             "drive_hours_max",
@@ -970,7 +978,9 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append("Бюджет (хотя бы «до … ₽/€/$» или «бюджет гибкий»)")
     if not brief.get("adults") and not brief.get("kids_count"):
         missing.append("Кто едет (взрослые/дети)")
-    if not brief_transport.transport_block_ok(brief):
+    if not brief_route_combo.is_route_combo_planning(brief) and not brief_transport.transport_block_ok(
+        brief
+    ):
         missing.append(
             brief_transport.transport_missing_hint(
                 brief, has_destination=_has_destination_hint(brief)
@@ -981,6 +991,12 @@ def missing_brief_fields(brief: Dict[str, Any]) -> list[str]:
         missing.append(
             "Сценарий отдыха (море, горы, спокойный отель — можно своими словами)"
         )
+    if brief_route_combo.is_route_combo_planning(brief) and not brief.get(
+        "trip_duration_days_raw"
+    ):
+        hint = "Сколько дней на комбо (например 10–14) или «гибко по срокам»"
+        if hint not in missing:
+            missing.append(hint)
     return missing
 
 
@@ -1114,6 +1130,8 @@ def merge_brief_clarify(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[
         if k in {
             "destination_primary",
             "destination_alternatives",
+            "destination_candidates",
+            "route_combo_planning",
             "trip_transport",
             "flight_not_needed",
             "drive_hours_max",

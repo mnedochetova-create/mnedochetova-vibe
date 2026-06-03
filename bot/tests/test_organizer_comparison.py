@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import brief_parser
+import brief_route_combo
 import message_intent
 
 ELENA_FIRST = (
@@ -23,22 +24,28 @@ def test_elena_message_intent_mixed():
     )
 
 
-def test_elena_parse_primary_and_alternatives():
+def test_elena_parse_combo_in_preferences():
     brief = brief_parser.extract_brief_from_text(ELENA_FIRST, role="organizer")
     assert brief.get("adults") == 2
-    assert brief.get("destination_primary") == "Хорватия"
-    alts = brief.get("destination_alternatives") or []
-    assert "Италия" in alts
-    assert "Франция" in alts
-    assert brief.get("months") == ["сентябрь"]
+    assert brief.get("route_combo_planning") is True
+    combo = brief_route_combo.combo_line_from_brief(brief)
+    assert combo.lower().startswith(brief_route_combo.COMBO_LINE_PREFIX)
+    assert "Хорватия" in combo
+    assert "Италия" in combo
+    assert "Франция" in combo
+    assert "максимум достопримечательностей" in (brief.get("activity_preferences") or [])
+    assert not brief.get("destination_alternatives")
+    assert brief.get("climate") != "море/пляж"
     assert "конец сентября" in (brief.get("date_range_raw") or "").lower()
-    assert not any("Франция (Шенген)" in str(n) for n in (brief.get("visa_notes") or []))
-    party = (brief.get("party_preferences") or {}).get("организатор") or {}
-    assert "Франция" not in (party.get("wants") or [])
-    prefs = brief.get("activity_preferences") or []
-    direction_prefs = [p for p in prefs if str(p).lower().startswith("предпочтение по направлению:")]
-    assert len(direction_prefs) == 1
-    assert "Хорватия" in direction_prefs[0]
+    assert brief.get("trip_title", "").startswith("Комбо")
+
+
+def test_elena_missing_no_flight_on_first_message():
+    brief = brief_parser.extract_brief_from_text(ELENA_FIRST, role="organizer")
+    missing = brief_parser.missing_brief_fields(brief)
+    assert not any(m.startswith("Перелёт") for m in missing)
+    assert not any(m.startswith("Передвижение") for m in missing)
+    assert any("дней на комбо" in m.lower() for m in missing)
 
 
 def test_elena_clarify_second_message_merges():
@@ -51,5 +58,5 @@ def test_elena_clarify_second_message_merges():
         first, second, flow_step="organizer_clarify", has_prior_dump=True
     )
     assert merged.get("budget_flexible")
-    assert merged.get("destination_primary") == "Хорватия"
+    assert brief_route_combo.is_route_combo_planning(merged)
     assert brief_parser.organizer_core_brief_ok(merged)

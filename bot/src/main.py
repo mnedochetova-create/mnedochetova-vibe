@@ -38,6 +38,7 @@ import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
 import brief_display
+import brief_route_combo
 import ui_feedback
 
 
@@ -766,7 +767,8 @@ CONVERSATION_FALLBACK_PARTICIPANT = (
     "Поняла. Если хочешь — помогу сформулировать пожелания; когда будешь готов, напиши факты одним сообщением."
 )
 MIXED_FALLBACK_ORGANIZER = (
-    "Поняла вопрос. Ниже — что уже зафиксировала в брифе по твоим фактам."
+    "Вижу задачу — прикинуть комбо стран в твоём окне дат, а не зафиксировать одну страну. "
+    "Коротко отвечу ниже; в брифе — варианты и пожелание собрать маршрут."
 )
 
 
@@ -991,10 +993,28 @@ async def handle_organizer_mixed(
     event_code, brief = await resolve_organizer_event_and_brief(message, state)
     missing = missing_brief_fields(brief)
 
+    t_low = (text or "").lower()
+    combo_mode = brief_route_combo.is_route_combo_planning(brief) or (
+        brief_stay_enrich.is_comparison_mode(t_low) and "?" in t_low
+    )
+    combo_note = brief_route_combo.combo_line_from_brief(brief)
+    if combo_mode and not combo_note:
+        countries = brief_route_combo.all_destinations_ordered(t_low)
+        if countries:
+            combo_note = brief_route_combo.combo_preference_line(countries)
     intro_context = build_live_prompt_context(
         role="organizer",
         flow_step="mixed",
-        human_status="Смешанная реплика: вопрос + факты",
+        human_status=(
+            "Смешанная реплика: планирование комбо стран — коротко ответь на вопрос о маршруте; "
+            f"в пожеланиях брифа будет: {combo_note}"
+            if combo_mode and combo_note
+            else (
+                "Смешанная реплика: планирование комбо стран — коротко ответь на вопрос о маршруте"
+                if combo_mode
+                else "Смешанная реплика: вопрос + факты"
+            )
+        ),
         allowed_next_action="ask_clarification | continue_flow | none",
         last_system_action="mixed_turn",
         brief=brief,
@@ -1366,9 +1386,13 @@ def format_brief_unified(
     if must_visit:
         style_facts.append(f"📍 <b>Обязательно:</b> {', '.join(esc(str(m)) for m in must_visit)}")
 
+    combo_line = brief_route_combo.combo_line_from_brief(brief)
+    if combo_line:
+        style_facts.append(f"🧭 <b>Задача:</b> {esc(combo_line)}")
+
     directions, extra_activity = split_activity_preferences(brief.get("activity_preferences") or [])
     alts = brief.get("destination_alternatives") or []
-    if alts:
+    if alts and not brief_route_combo.is_route_combo_planning(brief):
         alt_value = ", ".join(esc(str(a)) for a in alts)
         style_facts.append(f"🔀 <b>Рассматриваются:</b> {alt_value}")
     extra_filtered = brief_display.filter_extra_activity_preferences(brief, extra_activity)
