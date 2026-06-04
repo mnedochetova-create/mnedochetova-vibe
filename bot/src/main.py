@@ -386,11 +386,16 @@ def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Нативный выбор контакта: только text=, ссылка в [кнопка ниже](deeplink) без строки сверху."""
+    """Нативный выбор контакта (t.me/share/url): url=deeplink, text с именем организатора."""
     text = share_text if share_text is not None else build_invite_share_text(
         invite_link, for_native_share=True
     )
-    return f"https://t.me/share/url?text={quote(text, safe='')}"
+    if invite_link and invite_link in text:
+        text = text.replace(invite_link, "").strip().rstrip("\n")
+    return (
+        "https://t.me/share/url?"
+        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
+    )
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -445,9 +450,8 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Ниже — <b>сообщение для пересылки</b> участнику.\n"
-        "В нём имя организатора и ссылка для входа в поездку.\n"
-        "Кнопка «📤 Поделиться ↗️» обновит текст приглашения."
+        "Нажми <b>📤 Поделиться ↗️</b> — выбери чат с участником.\n"
+        "В приглашении будет <b>имя организатора</b> и ссылка на поездку."
     )
 
 
@@ -1777,8 +1781,22 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 
 
 def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
+    invite_link = (event or {}).get("invite_link") if event else None
     if event:
         ensure_event_invite_link(event)
+        invite_link = event.get("invite_link")
+    if invite_link:
+        share_text = (
+            invite_share_text_for_native_share(event)
+            if event
+            else build_invite_share_text(invite_link, for_native_share=True)
+        )
+        share_url = telegram_share_url(invite_link, share_text=share_text)
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📤 Поделиться ↗️", url=share_url)],
+            ]
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -2246,6 +2264,10 @@ async def show_organizer_invite_step(
         )
         return False
     event_number = event.get("event_number")
+    await ensure_organizer_name_on_event(
+        event, bot=message.bot, message=message, from_user=from_user
+    )
+    await _remove_invite_forward_card(message.bot, event)
     await _patch_stale_invite_messages(message.bot, event)
     invite_text = format_invite_step_message(event_number, event=event)
     invite_markup = invite_ready_keyboard(event)
@@ -2271,10 +2293,6 @@ async def show_organizer_invite_step(
         event["organizer_chat_id"] = message.chat.id
         touch_event(event)
         save_events()
-    await ensure_organizer_name_on_event(
-        event, bot=message.bot, message=message, from_user=from_user
-    )
-    await send_or_update_invite_forward_card(message, event, from_user=from_user)
     await log_session_action(
         message.bot,
         message,
@@ -2531,27 +2549,15 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    """Карточка для пересылки с HTML-ссылкой в «кнопка ниже»."""
+    """Старые callback-кнопки — обновить шаг с нативным t.me/share."""
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
-    if not event:
-        await callback.message.answer(
-            "Сначала создай поездку через «✨ Новая поездка».",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-    if not await send_or_update_invite_forward_card(
-        callback.message, event, from_user=callback.from_user
+    if not await show_organizer_invite_step(
+        callback.message, state, from_user=callback.from_user
     ):
-        await callback.message.answer(
-            "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
-            reply_markup=main_menu_keyboard(),
-        )
         return
     await callback.message.answer(
-        "↗️ <b>Перешлите сообщение выше</b> участнику.\n"
-        "Ссылка для входа — в словах «кнопка ниже».",
-        reply_markup=invite_waiting_keyboard(event),
+        "Нажми <b>📤 Поделиться ↗️</b> на сообщении выше — откроется выбор чата.",
+        reply_markup=invite_waiting_keyboard(),
     )
 
 

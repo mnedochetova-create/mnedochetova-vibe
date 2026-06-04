@@ -1,4 +1,4 @@
-"""Шаг приглашения: HTML-карточка для пересылки, ссылка в «кнопка ниже»."""
+"""Шаг приглашения: нативный t.me/share и текст с именем организатора."""
 
 import sys
 from pathlib import Path
@@ -11,15 +11,25 @@ if str(SRC_DIR) not in sys.path:
 import main  # noqa: E402
 
 
-def test_invite_ready_keyboard_uses_share_callback(monkeypatch) -> None:
+def test_invite_ready_keyboard_uses_native_share_url(monkeypatch) -> None:
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
-    event = {"invite_link": "https://t.me/MyTravelLabBot?start=join_abc123"}
+    event = {
+        "invite_link": "https://t.me/MyTravelLabBot?start=join_abc123",
+        "organizer_name": "Мария",
+        "brief": {"trip_title": "Тест"},
+    }
     kb = main.invite_ready_keyboard(event)
     assert len(kb.inline_keyboard) == 1
     btn = kb.inline_keyboard[0][0]
     assert btn.text == "📤 Поделиться ↗️"
-    assert btn.callback_data == "event:invite_share"
-    assert btn.url is None
+    assert btn.callback_data is None
+    assert btn.url is not None
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    assert "t.me/share/url" in btn.url
+    query = parse_qs(urlparse(btn.url).query)
+    assert "Мария" in unquote(query["text"][0])
+    assert "Организатор" in unquote(query["text"][0])
 
 
 def test_invite_forward_keyboard_for_organizer_preview() -> None:
@@ -34,7 +44,7 @@ def test_invite_step_message_short() -> None:
     text = main.format_invite_step_message(3)
     assert "#3" in text
     assert "Поделиться ↗️" in text
-    assert "пересылки" in text
+    assert "выбери" in text.lower() or "чат" in text
     assert "организатора" in text
 
 
@@ -137,11 +147,17 @@ def test_invite_forward_card_already_sent() -> None:
     assert main.invite_forward_card_already_sent({"invite_forward_message_id": 42})
 
 
-def test_telegram_share_url_plain_text_fallback() -> None:
+def test_telegram_share_url_includes_deeplink_and_text() -> None:
     from urllib.parse import parse_qs, unquote, urlparse
 
     link = "https://t.me/MyTravelLabBot?start=join_abc123"
-    share_url = main.telegram_share_url(link)
+    share_url = main.telegram_share_url(
+        link,
+        share_text=main.build_invite_share_text(
+            link, organizer_name="Мария", for_native_share=True
+        ),
+    )
     query = parse_qs(urlparse(share_url).query)
-    assert "url" not in query
+    assert query["url"][0] == link
     assert "кнопка ниже" in unquote(query["text"][0])
+    assert "Организатор Мария" in unquote(query["text"][0])
