@@ -110,6 +110,38 @@ def build_corner_fallback(
         )
     elif input_kind == "noise":
         lead = "Похоже, это сообщение не про вводные по поездке."
+    elif input_kind == "defer":
+        lead = (
+            "✅ <b>Ок, зафиксировала черновик.</b> Не буду давить на все поля сразу.\n\n"
+            "Когда созреешь — дополни одним сообщением или открой поездку в "
+            "<b>📂 Мои поездки</b>."
+        )
+        if active.get("invite_with_gaps"):
+            lead += "\n\n<i>Можно пригласить участников уже с черновиком — ссылка ниже.</i>"
+    elif input_kind == "autofill_request":
+        miss_hint = ""
+        if top_missing:
+            miss_hint = f"\n\n<b>Сейчас главное:</b> {top_missing[0]}."
+        lead = (
+            "Я не заполняю бриф за тебя без фактов — так честнее для всей группы."
+            f"{miss_hint}\n\n"
+            "Могу помочь <b>сформулировать</b> одну строку: кто едет, когда, бюджет «до …» "
+            "или «гибко» — скопируй и подправь."
+        )
+    elif input_kind == "share_visibility_request":
+        vis = active.get("field_visibility") or {}
+        hidden = vis.get("participant") or []
+        if hidden:
+            lead = (
+                f"Для участников уже скрыто: <b>{field_labels_ru(hidden)}</b>. "
+                "Напиши, что ещё убрать, например: «участникам не показывай бюджет»."
+            )
+        else:
+            lead = (
+                "Могу скрыть поля в брифе для участников и в тексте для семьи.\n\n"
+                "Например: «участникам не показывай бюджет» или «без дат в пересылке». "
+                "В твоём экране бриф останется полным."
+            )
     else:
         lead = "Поняла."
 
@@ -121,7 +153,11 @@ def build_corner_fallback(
         parts.append(
             f"\nСейчас в фокусе поездка <b>#{num}</b> — ты как <b>{role_ru}</b>."
         )
-        if top_missing and flow_step in {"organizer_dump", "organizer_clarify"}:
+        if (
+            top_missing
+            and flow_step in {"organizer_dump", "organizer_clarify"}
+            and input_kind not in {"defer", "autofill_request"}
+        ):
             miss = "\n".join(f"• {m}" for m in top_missing)
             parts.append(f"\n<b>Не хватает:</b>\n{miss}\n\nМожно одним сообщением.")
         elif active.get("action_short"):

@@ -15,7 +15,9 @@
 ## Где применяется
 
 - организатор: `organizer_dump`, `organizer_clarify` → `route_organizer_text_message`;
-- **corner** (ack / help / noise / media / без поездки): `handle_corner_guidance` → `corner_guidance.py` + промпты `prompts/corner_guidance_*.md` — тот же `USE_LLM_LIVE_RESPONSES` + `LLM_API_KEY`, контекст `trips_json` / `active_trip_json`; бриф не меняется. Путь A «дополнить» без фактов — статичный промпт, без LLM.
+- **corner** (ack / help / noise / media / **defer** / **autofill_request** / **share_visibility_request** / без поездки): `handle_corner_guidance` → `corner_guidance.py` + промпты `prompts/corner_guidance_*.md` — тот же `USE_LLM_LIVE_RESPONSES` + `LLM_API_KEY`, контекст `trips_json` / `active_trip_json` (в т.ч. `brief_deferred`, `invite_with_gaps`, `field_visibility`); бриф не меняется, кроме явного скрытия полей. Путь A «дополнить» без фактов — статичный промпт.
+- **Скрытие полей:** `brief_visibility.py` → `event.field_visibility` → урезанный бриф для участников (`format_brief_for_participant`) и plain-share (`format_brief_plain_for_share`); организатор видит полный бриф.
+- **Отложить бриф:** `brief_deferred_at`, `invite_allowed_with_gaps` — invite с черновиком без полного missing.
 - участник: `participant_contribute` → `route_participant_text_message`;
 - recovery в `text_fallback_handler` — та же логика intent.
 

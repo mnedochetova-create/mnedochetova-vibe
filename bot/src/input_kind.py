@@ -10,12 +10,53 @@ import message_intent
 InputKind = Literal[
     "substantive",
     "supplement_request",
+    "share_visibility_request",
+    "defer",
+    "autofill_request",
     "help",
     "ack",
     "noise",
     "media",
     "action_required",
 ]
+
+_DEFER_HINTS = (
+    r"оставь\s+как\s+есть",
+    r"пока\s+так",
+    r"пока\s+достаточно",
+    r"ещ[её]\s+дума",
+    r"подума",
+    r"не\s+готов",
+    r"верн[её]мся\s+позже",
+    r"позже\s+допол",
+    r"отлож",
+    r"не\s+сейчас",
+    r"хватит\s+на\s+сейчас",
+    r"черновик\s+ок",
+    r"пропуст",
+    r"без\s+уточнен",
+)
+
+_AUTOFILL_HINTS = (
+    r"подбери",
+    r"заполни\s+сам",
+    r"заполни\s+за",
+    r"определи\s+сам",
+    r"сопостав",
+    r"самостоятельно\s+заполни",
+    r"сам\s+реши",
+    r"выбери\s+за\s+меня",
+    r"предложи\s+вариант",
+)
+
+_INVITE_WITH_GAPS_HINTS = (
+    r"приглас",
+    r"участник",
+    r"ссылк",
+    r"отправ\w+\s+ссыл",
+    r"зови",
+    r"подключ",
+)
 
 _EXTRA_HELP_HINTS = (
     r"что\s+написать",
@@ -93,6 +134,46 @@ def is_help_message(text: str) -> bool:
     return _conv_score(normalized) >= 1 or extra_help >= 1 or "?" in normalized
 
 
+def is_share_visibility_request(text: str) -> bool:
+    import brief_visibility
+
+    if brief_visibility.parse_visibility_fields_rules(text):
+        return True
+    normalized = _normalized(text)
+    return brief_visibility.mentions_hide_intent(text) and _brief_score(normalized) < 2
+
+
+def is_defer_message(text: str) -> bool:
+    normalized = _normalized(text)
+    if not normalized or _brief_score(normalized) >= 2:
+        return False
+    if any(re.search(pat, normalized, flags=re.IGNORECASE) for pat in _DEFER_HINTS):
+        return True
+    if defer_requests_invite_with_gaps(text) and re.search(
+        r"потом|позже|пока|без|не\s+все|черновик|хватит",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def defer_requests_invite_with_gaps(text: str) -> bool:
+    normalized = _normalized(text)
+    if not normalized:
+        return False
+    return any(re.search(pat, normalized, flags=re.IGNORECASE) for pat in _INVITE_WITH_GAPS_HINTS)
+
+
+def is_autofill_request(text: str) -> bool:
+    normalized = _normalized(text)
+    if not normalized:
+        return False
+    if _brief_score(normalized) >= 2:
+        return False
+    return any(re.search(pat, normalized, flags=re.IGNORECASE) for pat in _AUTOFILL_HINTS)
+
+
 def is_noise_message(text: str, *, flow_step: str) -> bool:
     normalized = _normalized(text)
     if not normalized or is_ack_message(text) or is_help_message(text):
@@ -118,6 +199,12 @@ def classify_input_kind(
         return forced_kind
     if brief_complete and message_intent.is_supplement_request(text, brief_complete=True):
         return "supplement_request"
+    if role == "organizer" and is_share_visibility_request(text):
+        return "share_visibility_request"
+    if role == "organizer" and is_defer_message(text):
+        return "defer"
+    if is_autofill_request(text):
+        return "autofill_request"
     normalized = _normalized(text)
     if not normalized:
         return "ack"

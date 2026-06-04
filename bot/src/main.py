@@ -33,6 +33,7 @@ import brief_pipeline
 import brief_stay_enrich
 import env_util
 from parser_mode import get_parser_mode, llm_available
+import brief_visibility
 import corner_guidance
 import dialog_context
 import input_kind
@@ -608,57 +609,69 @@ def can_offer_brief_confirm(event: Dict[str, Any]) -> bool:
     return participants_all_confirmed(event)
 
 
-def format_brief_plain_for_share(brief: Dict[str, Any], event_number: Optional[int] = None) -> str:
+def format_brief_plain_for_share(
+    brief: Dict[str, Any],
+    event_number: Optional[int] = None,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+) -> str:
+    hidden = brief_visibility.get_hidden_fields(event, "share_plain")
     lines: List[str] = []
     label = f"Поездка #{event_number}" if isinstance(event_number, int) else "Поездка"
     lines.append(label)
 
-    if brief.get("date_range_raw"):
-        lines.append(f"Даты: {brief['date_range_raw']}")
-    elif brief.get("months"):
-        lines.append("Даты: " + ", ".join(str(m) for m in brief["months"]))
+    if "dates" not in hidden:
+        if brief.get("date_range_raw"):
+            lines.append(f"Даты: {brief['date_range_raw']}")
+        elif brief.get("months"):
+            lines.append("Даты: " + ", ".join(str(m) for m in brief["months"]))
 
-    budget_line = format_budget_display(brief)
-    if budget_line != "—":
-        lines.append(f"Бюджет: {budget_line}")
+    if "budget" not in hidden:
+        budget_line = format_budget_display(brief)
+        if budget_line != "—":
+            lines.append(f"Бюджет: {budget_line}")
 
-    group_parts: List[str] = []
-    if brief.get("adults"):
-        group_parts.append(f"{brief['adults']} взрослых")
-    if brief.get("kids_count"):
-        group_parts.append(f"{brief['kids_count']} детей")
-    if group_parts:
-        lines.append("Состав: " + ", ".join(group_parts))
+    if "group" not in hidden:
+        group_parts: List[str] = []
+        if brief.get("adults"):
+            group_parts.append(f"{brief['adults']} взрослых")
+        if brief.get("kids_count"):
+            group_parts.append(f"{brief['kids_count']} детей")
+        if group_parts:
+            lines.append("Состав: " + ", ".join(group_parts))
 
-    transport_line = format_transport_display(brief)
-    if transport_line != "—":
-        t_label = transport_field_label(brief)
-        lines.append(f"{t_label}: {transport_line}")
+    if "transport" not in hidden:
+        transport_line = format_transport_display(brief)
+        if transport_line != "—":
+            t_label = transport_field_label(brief)
+            lines.append(f"{t_label}: {transport_line}")
 
-    if brief.get("trip_duration_days_raw"):
+    if "duration" not in hidden and brief.get("trip_duration_days_raw"):
         lines.append(f"Длительность: {brief['trip_duration_days_raw']}")
 
-    if "visa_required" in brief:
-        lines.append("Визы: " + ("нужна" if brief["visa_required"] else "без визы"))
+    if "passports" not in hidden:
+        if "visa_required" in brief:
+            lines.append("Визы: " + ("нужна" if brief["visa_required"] else "без визы"))
+        if brief.get("passports_status"):
+            lines.append(f"Загранпаспорта: {brief['passports_status']}")
 
-    if brief.get("passports_status"):
-        lines.append(f"Загранпаспорта: {brief['passports_status']}")
+    if "stay" not in hidden:
+        brief_stay_enrich.enrich_stay_from_context(brief)
+        scenario = brief_stay_enrich.format_stay_experience_display(brief)
+        if scenario:
+            lines.append(f"Сценарий и локация: {scenario}")
+        elif brief.get("climate"):
+            lines.append(f"Климат: {brief['climate']}")
+        if brief.get("trip_type") and not scenario:
+            lines.append(f"Формат: {brief['trip_type']}")
 
-    brief_stay_enrich.enrich_stay_from_context(brief)
-    scenario = brief_stay_enrich.format_stay_experience_display(brief)
-    if scenario:
-        lines.append(f"Сценарий и локация: {scenario}")
-    elif brief.get("climate"):
-        lines.append(f"Климат: {brief['climate']}")
-    if brief.get("trip_type") and not scenario:
-        lines.append(f"Формат: {brief['trip_type']}")
-
-    activity = brief.get("activity_preferences") or []
-    if activity:
-        lines.append("Пожелания: " + "; ".join(str(a) for a in activity))
+    if "activities" not in hidden:
+        activity = brief.get("activity_preferences") or []
+        if activity:
+            lines.append("Пожелания: " + "; ".join(str(a) for a in activity))
 
     participant_preferences = brief.get("participant_preferences") or {}
-    if participant_preferences:
+    if participant_preferences and "participant_block" not in hidden:
         lines.append("")
         lines.append("Участники:")
         for name, prefs in participant_preferences.items():
@@ -1124,6 +1137,12 @@ def _append_organizer_dump(existing: Optional[str], new_text: str) -> str:
     return f"{prev}\n{chunk}"
 
 
+def organizer_may_invite(brief: Dict[str, Any], event: Optional[Dict[str, Any]]) -> bool:
+    if not missing_brief_fields(brief):
+        return True
+    return bool((event or {}).get("invite_allowed_with_gaps"))
+
+
 def build_organizer_brief_reply_parts(
     brief: Dict[str, Any],
     *,
@@ -1131,14 +1150,25 @@ def build_organizer_brief_reply_parts(
     event_number: Optional[int],
     chat_id: int,
     missing: List[str],
+    event: Optional[Dict[str, Any]] = None,
 ) -> tuple[List[str], bool]:
     summary_text = format_brief_update_message(
-        brief, event_number=event_number, missing=missing
+        brief, event_number=event_number, missing=missing, event=event
     )
     parts = [summary_text]
-    if not missing:
-        # CTA «пригласить» — в отдельном сообщении send_next_step_after_brief
+    if organizer_may_invite(brief, event):
+        if missing and (event or {}).get("invite_allowed_with_gaps"):
+            parts.append(
+                "<i>Можно пригласить участников с черновиком — недостающее дополнишь позже.</i>"
+            )
         return parts, True
+
+    if (event or {}).get("brief_deferred_at"):
+        parts.append(
+            "<i>Черновик сохранён. Когда будешь готов — дополни одним сообщением "
+            "или открой 📂 Мои поездки.</i>"
+        )
+        return parts, False
 
     top_missing = dialog_context.prioritize_missing(missing)
     header = (
@@ -1237,6 +1267,110 @@ async def enter_organizer_supplement_mode(
             save_events()
 
 
+async def handle_organizer_defer(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+    brief: Dict[str, Any],
+    missing: List[str],
+    event_code: Optional[str],
+) -> None:
+    if not event_code or event_code not in EVENTS:
+        await handle_corner_guidance(
+            message,
+            state,
+            kind="defer",
+            role="organizer",
+            flow_step=flow_step,
+            brief=brief,
+            missing=missing,
+        )
+        return
+    event = EVENTS[event_code]
+    event["brief_deferred_at"] = now_ts()
+    if input_kind.defer_requests_invite_with_gaps(message.text or ""):
+        event["invite_allowed_with_gaps"] = True
+    touch_event(event)
+    save_events()
+    await handle_corner_guidance(
+        message,
+        state,
+        kind="defer",
+        role="organizer",
+        flow_step=flow_step,
+        brief=brief,
+        missing=missing,
+        preferred_event_code=event_code,
+    )
+    if organizer_may_invite(brief, event) and (not missing or event.get("invite_allowed_with_gaps")):
+        await send_next_step_after_brief(message, state)
+
+
+async def handle_field_visibility_request(
+    message: Message,
+    state: FSMContext,
+    *,
+    flow_step: str,
+    event_code: Optional[str],
+) -> None:
+    text = message.text or ""
+    if not event_code or event_code not in EVENTS:
+        await handle_corner_guidance(
+            message,
+            state,
+            kind="share_visibility_request",
+            role="organizer",
+            flow_step=flow_step,
+        )
+        return
+    event = EVENTS[event_code]
+    fields = brief_visibility.parse_visibility_fields(text)
+    if not fields:
+        await handle_corner_guidance(
+            message,
+            state,
+            kind="share_visibility_request",
+            role="organizer",
+            flow_step=flow_step,
+            preferred_event_code=event_code,
+        )
+        return
+    added = brief_visibility.merge_hidden_fields(event, fields)
+    touch_event(event)
+    save_events()
+    labels = brief_visibility.field_labels_ru(added)
+    fallback = (
+        f"✅ <b>Учла.</b> Для участников и в тексте «для семьи» скрыла: <b>{html.escape(labels)}</b>.\n\n"
+        "В <b>твоём</b> экране бриф остаётся полным. "
+        "Турагенту можно переслать полный текст отдельно, когда будешь на шаге sharing."
+    )
+    if live_response.live_responses_enabled():
+        async with ui_feedback.thinking(message):
+            reply = corner_guidance.corner_text_or_fallback(
+                {
+                    "input_kind": "share_visibility_request",
+                    "role": "organizer",
+                    "flow_step": "corner",
+                    "human_status": f"Скрыты поля: {labels}",
+                    "allowed_next_action": "continue_flow | none",
+                    "step_context_human": f"Организатор скрыл поля: {labels}",
+                    "dialog_summary": "",
+                    "last_bot_message": "",
+                    "trips_json": list_chat_trips(message.chat.id),
+                    "active_trip_json": active_trip_snapshot_for_chat(
+                        message.chat.id, preferred_event_code=event_code
+                    ),
+                    "user_message": text,
+                },
+                fallback,
+            )
+    else:
+        reply = fallback
+    await message.answer(reply, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=reply)
+
+
 async def handle_organizer_supplement_prompt(message: Message, state: FSMContext) -> None:
     """Путь A: просьба дополнить без фактов — режим уточнения, без парсера и invite."""
     event_code, _brief = await resolve_organizer_event_and_brief(message, state)
@@ -1260,15 +1394,17 @@ async def handle_organizer_brief_input(
 ) -> None:
     text = message.text or ""
     await save_dialog_turn(state, user_text=text)
-    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+    brief, missing, event_number, event_code = await _apply_organizer_brief_from_message(
         message, state, flow_step=flow_step
     )
+    event = EVENTS.get(event_code, {}) if event_code else {}
     parts, is_complete = build_organizer_brief_reply_parts(
         brief,
         flow_step=flow_step,
         event_number=event_number,
         chat_id=message.chat.id,
         missing=missing,
+        event=event,
     )
     body = "\n\n".join(p for p in parts if p and str(p).strip())
     if not body.strip():
@@ -1277,7 +1413,7 @@ async def handle_organizer_brief_input(
         )
     skip_invite = False
     if is_complete:
-        skip_invite = await _organizer_skip_invite_resend(state, _event_code)
+        skip_invite = await _organizer_skip_invite_resend(state, event_code)
         await state.update_data(awaiting_supplement=False)
         if skip_invite:
             body = (
@@ -1430,20 +1566,22 @@ async def handle_organizer_mixed(
     )
     intro = await answer_live_text(message, intro_context, MIXED_FALLBACK_ORGANIZER)
 
-    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+    brief, missing, event_number, event_code = await _apply_organizer_brief_from_message(
         message, state, flow_step=flow_step
     )
+    event = EVENTS.get(event_code, {}) if event_code else {}
     brief_parts, is_complete = build_organizer_brief_reply_parts(
         brief,
         flow_step=flow_step,
         event_number=event_number,
         chat_id=message.chat.id,
         missing=missing,
+        event=event,
     )
     body = "\n\n".join([intro, *brief_parts])
     skip_invite = False
     if is_complete:
-        skip_invite = await _organizer_skip_invite_resend(state, _event_code)
+        skip_invite = await _organizer_skip_invite_resend(state, event_code)
         await state.update_data(awaiting_supplement=False)
         if skip_invite:
             body = (
@@ -1475,6 +1613,24 @@ async def route_organizer_text_message(
     )
     if kind == "supplement_request":
         await handle_organizer_supplement_prompt(message, state)
+        return
+    if kind == "defer":
+        await handle_organizer_defer(
+            message,
+            state,
+            flow_step=flow_step,
+            brief=brief,
+            missing=missing,
+            event_code=event_code,
+        )
+        return
+    if kind == "share_visibility_request":
+        await handle_field_visibility_request(
+            message,
+            state,
+            flow_step=flow_step,
+            event_code=event_code,
+        )
         return
     if kind != "substantive":
         await handle_corner_guidance(
@@ -1750,7 +1906,9 @@ def format_brief_unified(
     group_conflicts: Optional[List[str]] = None,
     missing: Optional[List[str]] = None,
     event: Optional[Dict[str, Any]] = None,
+    audience: brief_visibility.Audience = "organizer",
 ) -> str:
+    hidden = brief_visibility.get_hidden_fields(event, audience)
     def esc(value: Any) -> str:
         return html.escape(str(value))
 
@@ -1804,44 +1962,51 @@ def format_brief_unified(
     core_facts: List[str] = []
     style_facts: List[str] = []
 
-    dates_display = brief_domestic_route.format_dates_display(brief)
-    if dates_display:
-        dates_value = f"<code>{esc(dates_display)}</code>"
-    elif brief.get("months"):
-        dates_value = ", ".join(esc(item) for item in brief["months"])
-    else:
-        dates_value = "—"
-    core_facts.append(f"📅 <b>Даты:</b> {dates_value}")
+    if "dates" not in hidden:
+        dates_display = brief_domestic_route.format_dates_display(brief)
+        if dates_display:
+            dates_value = f"<code>{esc(dates_display)}</code>"
+        elif brief.get("months"):
+            dates_value = ", ".join(esc(item) for item in brief["months"])
+        else:
+            dates_value = "—"
+        core_facts.append(f"📅 <b>Даты:</b> {dates_value}")
 
-    core_facts.append(f"💰 <b>Бюджет:</b> {esc(format_budget_display(brief))}")
+    if "budget" not in hidden:
+        core_facts.append(f"💰 <b>Бюджет:</b> {esc(format_budget_display(brief))}")
 
-    if brief.get("adults") or brief.get("kids_count"):
-        parts: list[str] = []
-        if brief.get("adults"):
-            parts.append(f"{brief['adults']} взрослых")
-        if brief.get("kids_count"):
-            parts.append(brief_domestic_route.format_kids_count(int(brief["kids_count"])))
-        group_value = ", ".join(parts)
-    else:
-        group_value = "—"
-    core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
+    if "group" not in hidden:
+        if brief.get("adults") or brief.get("kids_count"):
+            parts: list[str] = []
+            if brief.get("adults"):
+                parts.append(f"{brief['adults']} взрослых")
+            if brief.get("kids_count"):
+                parts.append(brief_domestic_route.format_kids_count(int(brief["kids_count"])))
+            group_value = ", ".join(parts)
+        else:
+            group_value = "—"
+        core_facts.append("👨‍👩‍👧‍👦 <b>Состав:</b> " + group_value)
 
-    t_label = transport_field_label(brief)
-    t_icon = transport_field_icon(brief)
-    core_facts.append(
-        f"{t_icon} <b>{esc(t_label)}:</b> {esc(format_transport_display(brief, esc=esc, missing=missing))}"
-    )
-    duration_value = esc(brief_domestic_route.format_duration_display(brief))
-    core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
+    if "transport" not in hidden:
+        t_label = transport_field_label(brief)
+        t_icon = transport_field_icon(brief)
+        core_facts.append(
+            f"{t_icon} <b>{esc(t_label)}:</b> {esc(format_transport_display(brief, esc=esc, missing=missing))}"
+        )
+    if "duration" not in hidden:
+        duration_value = esc(brief_domestic_route.format_duration_display(brief))
+        core_facts.append(f"⏳ <b>Длительность:</b> {duration_value}")
 
-    if brief_domestic_route.is_domestic_auto_brief(brief):
-        brief_domestic_route.apply_domestic_documents_defaults(brief)
-    passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
-    core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
+    if "passports" not in hidden:
+        if brief_domestic_route.is_domestic_auto_brief(brief):
+            brief_domestic_route.apply_domestic_documents_defaults(brief)
+        passports_value = esc(brief["passports_status"]) if brief.get("passports_status") else "—"
+        core_facts.append(f"🛃 <b>Загранпаспорта:</b> {passports_value}")
 
-    brief_stay_enrich.enrich_stay_from_context(brief)
-    scenario_value = esc(brief_stay_enrich.format_stay_experience_display(brief)) or "—"
-    style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
+    if "stay" not in hidden:
+        brief_stay_enrich.enrich_stay_from_context(brief)
+        scenario_value = esc(brief_stay_enrich.format_stay_experience_display(brief)) or "—"
+        style_facts.append(f"🌍 <b>Сценарий и локация:</b> {scenario_value}")
 
     acc_line = brief_domestic_route.format_accommodation_line(brief)
     if acc_line:
@@ -1863,10 +2028,11 @@ def format_brief_unified(
     if alts and not brief_route_combo.is_route_combo_planning(brief):
         alt_value = ", ".join(esc(str(a)) for a in alts)
         style_facts.append(f"🔀 <b>Рассматриваются:</b> {alt_value}")
-    extra_filtered = brief_display.filter_extra_activity_preferences(brief, extra_activity)
-    if extra_filtered:
-        extra_value = ", ".join(esc(item) for item in extra_filtered)
-        style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
+    if "activities" not in hidden:
+        extra_filtered = brief_display.filter_extra_activity_preferences(brief, extra_activity)
+        if extra_filtered:
+            extra_value = ", ".join(esc(item) for item in extra_filtered)
+            style_facts.append(f"🧩 <b>Дополнительные пожелания:</b> {extra_value}")
 
     party_summary = brief_display.format_party_group_summary(brief)
     if party_summary and not brief_domestic_route.party_summary_redundant(brief, party_summary):
@@ -1884,7 +2050,7 @@ def format_brief_unified(
             lines.append(f"• {esc(item)}")
 
     participant_preferences = brief.get("participant_preferences") or {}
-    if participant_preferences:
+    if participant_preferences and "participant_block" not in hidden:
         lines.append("\n👤 <b>Что добавили участники</b>")
         for name, prefs in participant_preferences.items():
             row: list[str] = []
@@ -1958,13 +2124,15 @@ def format_brief_for_participant(
     *,
     event: Optional[Dict[str, Any]] = None,
 ) -> str:
-    return format_brief_unified(
+    body = format_brief_unified(
         brief=brief,
         event_number=event_number,
         title="📌 <b>Актуальный бриф поездки</b>",
         missing=missing_brief_fields(brief),
         event=event,
+        audience="participant",
     )
+    return body + brief_visibility.visibility_note_for_event(event)
 
 
 def participant_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -2309,6 +2477,9 @@ def active_trip_snapshot_for_chat(
     item["missing_count"] = len(missing_brief_fields(brief))
     item["invite_shown"] = bool(event.get("invite_instruction_message_id"))
     item["brief_confirmed"] = bool(event.get("organizer_brief_confirmed_at"))
+    item["brief_deferred"] = bool(event.get("brief_deferred_at"))
+    item["invite_with_gaps"] = bool(event.get("invite_allowed_with_gaps"))
+    item["field_visibility"] = brief_visibility.normalize_field_visibility(event)
     return item
 
 
@@ -2339,6 +2510,9 @@ async def handle_corner_guidance(
         "help": "Вопрос или просьба помочь сформулировать вводные",
         "ack": "Короткая реплика без фактов (смайлик, привет, ок)",
         "noise": "Сообщение не похоже на вводные по поездке",
+        "defer": "Отложить уточнения / черновик / приглашение с пробелами",
+        "autofill_request": "Просьба заполнить бриф автоматически — только подсказки",
+        "share_visibility_request": "Скрыть поля для участников и family-share",
     }
     fallback = corner_guidance.build_corner_fallback(
         kind,
@@ -2874,7 +3048,9 @@ async def _brief_share_text_callback_impl(callback: CallbackQuery, state: FSMCon
             await callback.message.answer("Сначала собери и подтверди бриф поездки.")
         return
     brief = event.get("brief") or {}
-    plain = format_brief_plain_for_share(brief, event.get("event_number"))
+    plain = format_brief_plain_for_share(
+        brief, event.get("event_number"), event=event
+    )
     share_text = html.escape(build_brief_share_text(plain))
     await callback.message.answer(
         "📋 <b>Скопируй и отправь</b>\n"
