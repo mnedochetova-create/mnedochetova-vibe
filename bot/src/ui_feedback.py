@@ -11,7 +11,7 @@ from typing import AsyncIterator, Optional
 from aiogram.types import Message
 
 # Меняется при каждом деплое — можно проверить в /help, что бот обновился.
-BOT_UI_VERSION = os.getenv("BOT_UI_VERSION", "2026-05-28-share-markdown-cta")
+BOT_UI_VERSION = os.getenv("BOT_UI_VERSION", "2026-05-28-torah-share")
 
 
 async def _typing_loop(bot, chat_id: int, stop: asyncio.Event) -> None:

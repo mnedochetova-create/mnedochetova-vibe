@@ -172,16 +172,6 @@ def invite_join_code_from_link(invite_link: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def build_invite_share_cta_markdown(invite_link: str) -> str:
-    """CTA со ссылкой в слове (Markdown для нативного «Поделиться» в Telegram)."""
-    return f"[Присоединиться к поездке]({invite_link})"
-
-
-def build_invite_share_cta_html(invite_link: str) -> str:
-    """Тот же CTA для HTML-сообщений бота (кликабельное слово)."""
-    return f'<a href="{html.escape(invite_link, quote=True)}">Присоединиться к поездке</a>'
-
-
 def build_invite_share_text(
     invite_link: str,
     *,
@@ -197,8 +187,9 @@ def build_invite_share_text(
         "и допиши одним сообщением, что важно лично тебе."
     )
     if for_native_share:
+        # Как @torah_robot: @бот + текст; deeplink — в превью кнопки (параметр url=), не в теле.
         prefix = f"@{BOT_USERNAME}\n\n" if BOT_USERNAME else ""
-        return f"{prefix}{body}\n\n{build_invite_share_cta_markdown(invite_link)}"
+        return f"{prefix}{body}\n\n👉 Присоединиться к поездке — кнопка ниже."
     if include_link:
         return f"{body}\n\n{invite_link}"
     code = invite_join_code_from_link(invite_link)
@@ -260,11 +251,16 @@ def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Нативный выбор контакта: только text=, deeplink в [Присоединиться](url) без строки сверху."""
+    """Нативный выбор контакта (t.me/share/url): url=deeplink, text без ссылки в теле."""
     text = share_text if share_text is not None else build_invite_share_text(
         invite_link, for_native_share=True
     )
-    return f"https://t.me/share/url?text={quote(text, safe='')}"
+    if invite_link and invite_link in text:
+        text = text.replace(invite_link, "").strip().rstrip("\n")
+    return (
+        "https://t.me/share/url?"
+        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
+    )
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -319,9 +315,8 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Нажми <b>📤 Поделиться ↗️</b> — выбери участника в списке Telegram.\n"
-        "В сообщении будет ссылка для входа в эту поездку "
-        "(слово «Присоединиться к поездке» — кликабельная ссылка)."
+        "Нажми <b>📤 Поделиться ↗️</b> — откроется список контактов Telegram.\n"
+        "Участнику уйдёт приглашение с кнопкой входа в поездку (как у @torah_robot)."
     )
 
 
@@ -1954,55 +1949,50 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _remove_invite_forward_card(bot: Bot, event: Dict[str, Any]) -> None:
+    """Убрать устаревшее второе сообщение «для пересылки» из чата организатора."""
+    chat_id = event.get("organizer_chat_id")
+    forward_id = event.get("invite_forward_message_id")
+    if not chat_id or not forward_id:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=forward_id)
+    except Exception:
+        logging.debug("invite forward card delete skipped", exc_info=True)
+    event.pop("invite_forward_message_id", None)
+    touch_event(event)
+    save_events()
+
+
 async def _patch_stale_invite_messages(bot: Bot, event: Dict[str, Any]) -> None:
-    """Заменить старые клавиатуры (t.me/share/url) на актуальные callback-кнопки."""
+    """Обновить текст/кнопку шага приглашения и удалить старую карточку пересылки."""
     chat_id = event.get("organizer_chat_id")
     if not chat_id:
         return
+    await _remove_invite_forward_card(bot, event)
     instruction_id = event.get("invite_instruction_message_id")
+    event_number = event.get("event_number")
+    new_text = format_invite_step_message(event_number, event=event)
+    new_markup = invite_ready_keyboard(event)
     if instruction_id:
+        try:
+            await bot.edit_message_text(
+                new_text,
+                chat_id=chat_id,
+                message_id=instruction_id,
+                reply_markup=new_markup,
+            )
+            return
+        except Exception:
+            logging.debug("invite instruction text patch skipped", exc_info=True)
         try:
             await bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=instruction_id,
-                reply_markup=invite_ready_keyboard(event),
+                reply_markup=new_markup,
             )
         except Exception:
             logging.debug("invite instruction markup patch skipped", exc_info=True)
-    forward_id = event.get("invite_forward_message_id")
-    if forward_id:
-        try:
-            await bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=forward_id,
-                reply_markup=None,
-            )
-        except Exception:
-            logging.debug("invite forward markup patch skipped", exc_info=True)
-
-
-def invite_forward_card_already_sent(event: Dict[str, Any]) -> bool:
-    return bool((event or {}).get("invite_forward_message_id"))
-
-
-async def send_invite_forward_card(
-    message: Message,
-    event: Dict[str, Any],
-) -> bool:
-    """Сообщение для пересылки: только текст (без url-кнопки — иначе Telegram дублирует ссылку)."""
-    ensure_event_invite_link(event)
-    invite_link = str(event.get("invite_link") or "").strip()
-    if not invite_link:
-        return False
-    sent = await message.answer(
-        invite_share_text_for_event(event),
-        reply_markup=None,
-    )
-    if sent and event.get("organizer_chat_id"):
-        event["invite_forward_message_id"] = sent.message_id
-        touch_event(event)
-        save_events()
-    return True
 
 
 async def show_organizer_invite_step(
@@ -2033,12 +2023,27 @@ async def show_organizer_invite_step(
         return False
     event_number = event.get("event_number")
     await _patch_stale_invite_messages(message.bot, event)
-    instruction = await message.answer(
-        format_invite_step_message(event_number, event=event),
-        reply_markup=invite_ready_keyboard(event),
-    )
-    if instruction and event.get("organizer_chat_id"):
-        event["invite_instruction_message_id"] = instruction.message_id
+    invite_text = format_invite_step_message(event_number, event=event)
+    invite_markup = invite_ready_keyboard(event)
+    instruction_id = event.get("invite_instruction_message_id")
+    sent_instruction_id: Optional[int] = None
+    if instruction_id and event.get("organizer_chat_id") == message.chat.id:
+        try:
+            await message.bot.edit_message_text(
+                invite_text,
+                chat_id=message.chat.id,
+                message_id=instruction_id,
+                reply_markup=invite_markup,
+            )
+            sent_instruction_id = instruction_id
+        except Exception:
+            logging.debug("invite step edit failed, sending new", exc_info=True)
+    if sent_instruction_id is None:
+        sent = await message.answer(invite_text, reply_markup=invite_markup)
+        if sent:
+            sent_instruction_id = sent.message_id
+    if sent_instruction_id and event.get("organizer_chat_id"):
+        event["invite_instruction_message_id"] = sent_instruction_id
         touch_event(event)
         save_events()
     await log_session_action(
@@ -2462,7 +2467,7 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
         return
     if snap.get("role") != "organizer":
         await callback.message.answer(
-            "Ссылку отправляет организатор. Если её нет — попроси организатора нажать «📤 Поделиться приглашением».",
+            "Ссылку отправляет организатор. Если её нет — попроси организатора нажать «📤 Поделиться ↗️».",
             reply_markup=help_keyboard(),
         )
         return
