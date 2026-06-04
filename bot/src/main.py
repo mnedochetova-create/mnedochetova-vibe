@@ -356,19 +356,90 @@ def invite_share_text_for_event(
     )
 
 
-def invite_share_text_for_native_share(event: Dict[str, Any]) -> str:
+# Лимит Bot API на url у inline-кнопки; длинный text= в t.me/share/url легко его превышает.
+TELEGRAM_INLINE_BUTTON_URL_MAX = 512
+
+
+def _truncate_trip_title_for_share(title: str, max_len: int) -> str:
+    title = (title or "").strip()
+    if not title or max_len <= 0:
+        return ""
+    if len(title) <= max_len:
+        return title
+    return title[: max_len - 1].rstrip() + "…"
+
+
+def invite_share_text_for_native_share(
+    event: Dict[str, Any],
+    *,
+    max_trip_title_len: Optional[int] = None,
+    use_generic_trip: bool = False,
+) -> str:
     invite_link = str((event or {}).get("invite_link") or "").strip()
     import brief_domestic_route
 
     brief = dict((event or {}).get("brief") or {})
     brief_domestic_route.prepare_brief_for_display(brief, event=event)
-    trip_title = brief_display.get_trip_title(brief)
+    trip_title: Optional[str] = None
+    if not use_generic_trip:
+        raw_title = brief_display.get_trip_title(brief)
+        if max_trip_title_len is None:
+            trip_title = raw_title
+        else:
+            trip_title = _truncate_trip_title_for_share(raw_title, max_trip_title_len) or None
     return build_invite_share_text(
         invite_link,
         trip_title=trip_title,
         organizer_name=organizer_display_name_for_event(event),
         for_native_share=True,
     )
+
+
+def telegram_share_url_text_only(invite_link: str, body: str) -> str:
+    """Нативный share только через text= (короче, чем url=+text=)."""
+    text = body.strip()
+    if invite_link and invite_link not in text:
+        text = f"{text}\n{invite_link}"
+    return f"https://t.me/share/url?text={quote(text, safe='')}"
+
+
+def telegram_share_url_for_event(event: Dict[str, Any]) -> Optional[str]:
+    """t.me/share для inline-кнопки; укорачивает текст, чтобы url ≤ 512 символов."""
+    invite_link = str((event or {}).get("invite_link") or "").strip()
+    if not invite_link:
+        return None
+    share_text_opts = (
+        {},
+        {"max_trip_title_len": 40},
+        {"max_trip_title_len": 18},
+        {"use_generic_trip": True},
+    )
+    for opts in share_text_opts:
+        text = invite_share_text_for_native_share(event, **opts)
+        url = telegram_share_url(invite_link, share_text=text)
+        if len(url) <= TELEGRAM_INLINE_BUTTON_URL_MAX:
+            return url
+    for opts in share_text_opts:
+        text = invite_share_text_for_native_share(event, **opts)
+        url = telegram_share_url_text_only(invite_link, text)
+        if len(url) <= TELEGRAM_INLINE_BUTTON_URL_MAX:
+            return url
+    name = organizer_display_name_for_event(event)
+    if name:
+        compact = f"Привет! {name} приглашает в поездку MyTravel.Lab."
+    else:
+        compact = "Привет! Приглашение в поездку MyTravel.Lab."
+    for body in (
+        compact + "\n\n👉 Войти — ссылка ниже.",
+        compact,
+    ):
+        url = telegram_share_url_text_only(invite_link, body)
+        if len(url) <= TELEGRAM_INLINE_BUTTON_URL_MAX:
+            return url
+    url = telegram_share_url_text_only(invite_link, invite_link)
+    if len(url) > TELEGRAM_INLINE_BUTTON_URL_MAX:
+        logging.warning("invite share url exceeds Telegram limit len=%s", len(url))
+    return url
 
 
 def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
@@ -1786,12 +1857,13 @@ def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeybo
         ensure_event_invite_link(event)
         invite_link = event.get("invite_link")
     if invite_link:
-        share_text = (
-            invite_share_text_for_native_share(event)
+        share_url = (
+            telegram_share_url_for_event(event)
             if event
-            else build_invite_share_text(invite_link, for_native_share=True)
+            else telegram_share_url(invite_link)
         )
-        share_url = telegram_share_url(invite_link, share_text=share_text)
+        if not share_url:
+            share_url = telegram_share_url(invite_link)
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Поделиться ↗️", url=share_url)],
@@ -1973,6 +2045,13 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
             f"• Этап: <b>{html.escape(str(snap.get('state') or 'не определено'))}</b>\n"
             "• Активная поездка пока не найдена."
         )
+
+    if state is not None and snap.get("role") == "organizer" and snap.get("has_event"):
+        _code, event = await _organizer_event_from_state(state, chat_id=message.chat.id)
+        if event and event.get("invite_link"):
+            brief = brief_parser.restore_organizer_brief_from_event(event)
+            if not missing_brief_fields(brief):
+                await show_organizer_invite_step(message, state)
 
     await message.answer(
         f"{BOT_CAPABILITIES_HELP_BLOCK}\n\n"
@@ -2740,8 +2819,8 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
         )
         return
     await callback.message.answer(
-        "Если участник не может войти — попроси открыть ссылку из приглашения заново "
-        "или отправить /start в боте.",
+        "Нажми <b>📤 Поделиться ↗️</b> на сообщении «Бриф готов» выше — откроется выбор чата.\n\n"
+        "Если участник не может войти — пусть откроет ссылку из приглашения или отправит /start в боте.",
         reply_markup=help_keyboard(),
     )
 

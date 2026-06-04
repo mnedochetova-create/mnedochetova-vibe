@@ -28,8 +28,9 @@ def test_invite_ready_keyboard_uses_native_share_url(monkeypatch) -> None:
 
     assert "t.me/share/url" in btn.url
     query = parse_qs(urlparse(btn.url).query)
-    assert "Мария" in unquote(query["text"][0])
-    assert "Организатор" in unquote(query["text"][0])
+    shared = unquote(query["text"][0])
+    assert "Мария" in shared
+    assert "Организатор" in shared or "приглашает" in shared
 
 
 def test_invite_forward_keyboard_for_organizer_preview() -> None:
@@ -145,6 +146,22 @@ def test_invite_join_code_from_link() -> None:
 def test_invite_forward_card_already_sent() -> None:
     assert not main.invite_forward_card_already_sent({})
     assert main.invite_forward_card_already_sent({"invite_forward_message_id": 42})
+
+
+def test_telegram_share_url_for_event_fits_telegram_button_limit(monkeypatch) -> None:
+    monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelab_bot")
+    event = {
+        "invite_link": "https://t.me/MyTravelab_bot?start=join_d83b29",
+        "organizer_name": "Мария",
+        "brief": {
+            "trip_title": "Автопутешествие по центральной России · 2-15 июля · семья 2+4",
+        },
+    }
+    url = main.telegram_share_url_for_event(event)
+    assert url is not None
+    assert len(url) <= main.TELEGRAM_INLINE_BUTTON_URL_MAX
+    kb = main.invite_ready_keyboard(event)
+    assert kb.inline_keyboard[0][0].url == url
 
 
 def test_telegram_share_url_includes_deeplink_and_text() -> None:
