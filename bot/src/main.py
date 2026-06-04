@@ -39,6 +39,9 @@ import dialog_context
 import input_kind
 import live_response
 import message_intent
+import user_locale
+import voice_input
+import voc_feedback
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
 from storage import load_events_from_file, save_events_to_file
 import brief_display
@@ -63,6 +66,8 @@ def setup_logging() -> None:
 class FlowState(StatesGroup):
     organizer_dump = State()
     organizer_clarify = State()
+    organizer_voc_rating = State()
+    organizer_voc_feedback = State()
     participant_contribute = State()
     participant_confirm = State()
 
@@ -220,13 +225,26 @@ async def ensure_organizer_name_on_event(
 
 def format_start_greeting(user: Any) -> str:
     name = user_display_first_name(user)
+    lang = user_locale.resolve_language_code(user)
+    if lang == "en":
+        hello = f"Hi, {html.escape(name)}!" if name else "Hi!"
+        return (
+            f"👋 <b>{hello}</b>\n\n"
+            "I'm <b>MyTravel.Lab</b> — I help your group build one shared trip brief.\n\n"
+            "<b>How it works:</b>\n"
+            "1. You share trip basics in your own words (text or voice).\n"
+            "2. I structure a brief.\n"
+            "3. Participants add wishes via a link.\n"
+            "4. I merge everything and highlight mismatches.\n\n"
+            "Tap <b>✨ Create trip</b> to start."
+        )
     hello = f"Привет, {html.escape(name)}!" if name else "Привет!"
     return (
         f"👋 <b>{hello}</b>\n\n"
         "Я <b>MyTravel.Lab</b> — бот, который помогает собрать общий бриф поездки "
         "для всей компании.\n\n"
         "<b>Как это работает:</b>\n"
-        "1. Ты пишешь вводные своими словами.\n"
+        "1. Ты пишешь вводные своими словами (текстом или голосом).\n"
         "2. Я формирую структурированный бриф.\n"
         "3. Участники добавляют пожелания по ссылке.\n"
         "4. Я собираю всё в одну картину и подсвечиваю расхождения.\n\n"
@@ -1021,6 +1039,21 @@ def parser_confidence_hint() -> float:
     return 0.72
 
 
+def resolve_message_language(message: Message) -> str:
+    return user_locale.resolve_language_code(message.from_user)
+
+
+def sync_event_language(message: Message, event_code: Optional[str]) -> str:
+    lang = resolve_message_language(message)
+    if event_code and event_code in EVENTS:
+        user_locale.persist_language_on_event(EVENTS[event_code], message.from_user)
+    return lang
+
+
+def message_with_text(message: Message, text: str) -> Message:
+    return message.model_copy(update={"text": text})
+
+
 def build_live_prompt_context(
     *,
     role: str,
@@ -1035,6 +1068,7 @@ def build_live_prompt_context(
     user_message: str,
     dialog_history: Optional[List[Dict[str, str]]] = None,
     step_context_human: str = "",
+    language_code: str = "ru",
 ) -> Dict[str, Any]:
     history = dialog_context.trim_dialog_history(dialog_history or [])
     recent = history if history else [{"role": "user", "text": user_message}]
@@ -1056,6 +1090,7 @@ def build_live_prompt_context(
         "conflicts_json": conflicts,
         "recent_messages_json": recent,
         "user_message": user_message,
+        "language_code": language_code,
     }
 
 
@@ -1501,6 +1536,7 @@ async def handle_organizer_conversation(
         user_message=text,
         dialog_history=history,
         step_context_human=step_human,
+        language_code=resolve_message_language(message),
     )
     reply = await answer_live_text(message, live_context, CONVERSATION_FALLBACK_ORGANIZER)
     parts = [reply]
@@ -1563,6 +1599,7 @@ async def handle_organizer_mixed(
         step_context_human=dialog_context.build_step_context_human(
             role="organizer", flow_step="mixed", missing=missing
         ),
+        language_code=resolve_message_language(message),
     )
     intro = await answer_live_text(message, intro_context, MIXED_FALLBACK_ORGANIZER)
 
@@ -1812,6 +1849,7 @@ async def handle_participant_conversation(message: Message, state: FSMContext) -
         step_context_human=dialog_context.build_step_context_human(
             role="participant", flow_step="participant_contribute", missing=missing
         ),
+        language_code=resolve_message_language(message),
     )
     reply = await answer_live_text(message, live_context, CONVERSATION_FALLBACK_PARTICIPANT)
     parts = [reply]
@@ -2538,6 +2576,10 @@ async def handle_corner_guidance(
         "trips_json": trips,
         "active_trip_json": active,
         "user_message": text,
+        "language_code": resolve_message_language(message),
+        "locale_instruction": user_locale.llm_locale_instruction(
+            resolve_message_language(message)
+        ),
     }
     if live_response.live_responses_enabled():
         async with ui_feedback.thinking(message):
@@ -2814,7 +2856,253 @@ async def _show_organizer_invite_step_impl(
         event_number=event_number,
     )
     await flush_session_milestone(message.bot, message, "invite_shown")
+    code = event_code or event.get("code")
+    if code:
+        await maybe_send_voc_prompt(message, state, code)
     return True
+
+
+async def maybe_send_voc_prompt(
+    message: Message,
+    state: FSMContext,
+    event_code: str,
+) -> None:
+    """Один раз после готового брифа: оценка и открытый отзыв."""
+    event = EVENTS.get(event_code)
+    if not event or event.get("voc_prompt_sent_at"):
+        return
+    if event.get("voc_rating") is not None or event.get("voc_skipped_at"):
+        return
+    lang = sync_event_language(message, event_code)
+    event["voc_prompt_sent_at"] = now_ts()
+    touch_event(event)
+    save_events()
+    await state.update_data(role="organizer", event_code=event_code)
+    await state.set_state(FlowState.organizer_voc_rating)
+    await message.answer(
+        user_locale.voc_rating_prompt(lang),
+        reply_markup=voc_feedback.voc_rating_keyboard(),
+    )
+
+
+async def _apply_voc_rating(
+    message: Message,
+    state: FSMContext,
+    *,
+    rating: int,
+) -> None:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        return
+    event = EVENTS[event_code]
+    lang = sync_event_language(message, event_code)
+    event["voc_rating"] = rating
+    event["voc_rated_at"] = now_ts()
+    touch_event(event)
+    save_events()
+    await state.set_state(FlowState.organizer_voc_feedback)
+    fallback = user_locale.voc_feedback_prompt(lang, rating)
+    history = await load_dialog_history(state)
+    if live_response.live_responses_enabled():
+        ctx = voc_feedback.build_voc_feedback_live_context(
+            language_code=lang,
+            rating=rating,
+            user_message="",
+            dialog_history=history,
+        )
+        async with ui_feedback.thinking(message):
+            body = live_text_or_fallback(ctx, fallback)
+    else:
+        body = fallback
+    await message.answer(body, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=body)
+
+
+async def handle_voc_feedback_text(message: Message, state: FSMContext, text: str) -> None:
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    if not event_code or event_code not in EVENTS:
+        await state.set_state(FlowState.organizer_clarify)
+        return
+    event = EVENTS[event_code]
+    lang = sync_event_language(message, event_code)
+    rating = event.get("voc_rating") or 0
+    await save_dialog_turn(state, user_text=text)
+    history = await load_dialog_history(state)
+    ctx = voc_feedback.build_voc_feedback_live_context(
+        language_code=lang,
+        rating=int(rating) if rating else 3,
+        user_message=text,
+        dialog_history=history,
+    )
+    thanks = user_locale.voc_thanks(lang)
+    if live_response.live_responses_enabled():
+        async with ui_feedback.thinking(message):
+            ack = live_text_or_fallback(ctx, thanks)
+    else:
+        ack = thanks
+    event["voc_feedback_text"] = text
+    event["voc_collected_at"] = now_ts()
+    touch_event(event)
+    save_events()
+    await state.set_state(FlowState.organizer_clarify)
+    await message.answer(ack, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=ack)
+    await log_session_action(
+        message.bot,
+        message,
+        f"VOC отзыв ({rating}/5)",
+        role="organizer",
+        event_number=event.get("event_number"),
+    )
+
+
+async def voc_rate_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = callback.data or ""
+    try:
+        rating = int(data.removeprefix("voc:rate:"))
+    except ValueError:
+        return
+    if rating < 1 or rating > 5:
+        return
+    await _apply_voc_rating(callback.message, state, rating=rating)
+
+
+async def voc_skip_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    lang = resolve_message_language(callback.message)
+    if event_code and event_code in EVENTS:
+        event = EVENTS[event_code]
+        event["voc_skipped_at"] = now_ts()
+        touch_event(event)
+        save_events()
+    await state.set_state(FlowState.organizer_clarify)
+    await callback.message.answer(
+        user_locale.voc_skip_ack(lang),
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def ingest_user_text(message: Message, state: FSMContext, text: str) -> None:
+    """Единая точка текстового ввода (в т.ч. после голоса) для всех сценариев."""
+    msg = message_with_text(message, text)
+    normalized = normalize_text(text)
+    if normalized in {"начать", "start", "/start"}:
+        await start_handler(msg, state)
+        return
+    if await handle_menu_shortcuts(msg, state):
+        return
+
+    load_events(merge=True)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    current = await state.get_state()
+
+    if current == FlowState.organizer_voc_feedback:
+        await handle_voc_feedback_text(msg, state, text)
+        return
+    if current == FlowState.organizer_voc_rating:
+        rating = voc_feedback.parse_rating_from_text(text)
+        if rating:
+            await _apply_voc_rating(msg, state, rating=rating)
+            return
+        lang = resolve_message_language(msg)
+        await msg.answer(
+            user_locale.voc_rating_prompt(lang),
+            reply_markup=voc_feedback.voc_rating_keyboard(),
+        )
+        return
+
+    recovered = get_latest_event_for_chat(
+        msg.chat.id,
+        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+    )
+    if recovered:
+        event_code, event, role = recovered
+        sync_event_language(msg, event_code)
+        if role == "organizer":
+            flow_step = await restore_organizer_fsm_state(state, event_code)
+            async with ui_feedback.thinking(msg):
+                await route_organizer_text_message(msg, state, flow_step=flow_step)
+            return
+        participant_name = (
+            msg.from_user.full_name if msg.from_user and msg.from_user.full_name else str(msg.chat.id)
+        )
+        await state.update_data(
+            role="participant",
+            event_code=event_code,
+            participant_name=participant_name,
+        )
+        await state.set_state(FlowState.participant_contribute)
+        async with ui_feedback.thinking(msg):
+            await route_participant_text_message(msg, state)
+        return
+
+    if current == FlowState.organizer_dump:
+        async with ui_feedback.thinking(msg):
+            await route_organizer_text_message(msg, state, flow_step="organizer_dump")
+        return
+    if current == FlowState.organizer_clarify:
+        async with ui_feedback.thinking(msg):
+            await route_organizer_text_message(msg, state, flow_step="organizer_clarify")
+        return
+    if current == FlowState.participant_contribute:
+        async with ui_feedback.thinking(msg):
+            await route_participant_text_message(msg, state)
+        return
+    if current == FlowState.participant_confirm:
+        await handle_corner_guidance(
+            msg,
+            state,
+            kind="action_required",
+            role="participant",
+            flow_step="participant_confirm",
+        )
+        return
+
+    kind = input_kind.classify_input_kind(
+        text,
+        role="organizer",
+        flow_step="unknown",
+        brief_complete=False,
+    )
+    if kind == "substantive" and text_looks_like_brief_submission(text):
+        async with ui_feedback.thinking(msg):
+            event_code = await bootstrap_organizer_event(msg, state)
+            flow_step = await restore_organizer_fsm_state(state, event_code)
+            await route_organizer_text_message(msg, state, flow_step=flow_step)
+        return
+    await handle_corner_guidance(
+        msg,
+        state,
+        kind=kind if kind != "substantive" else "noise",
+        role="organizer",
+        flow_step="no_active_trip",
+    )
+
+
+async def voice_message_handler(message: Message, state: FSMContext) -> None:
+    if not message.voice:
+        return
+    lang = resolve_message_language(message)
+    async with ui_feedback.thinking(message):
+        text = await voice_input.transcribe_voice_message(
+            message.bot,
+            message.voice,
+            language=lang,
+        )
+    if not text.strip():
+        await message.answer(
+            user_locale.voice_failed_message(lang),
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    logging.info("Voice ingested chat_id=%s chars=%d", message.chat.id, len(text))
+    await ingest_user_text(message, state, text)
 
 
 async def send_next_step_after_brief(message: Message, state: FSMContext) -> None:
@@ -3459,7 +3747,7 @@ async def _start_payload_join_impl(
 
 async def participant_contribute_handler(message: Message, state: FSMContext) -> None:
     try:
-        await route_participant_text_message(message, state)
+        await ingest_user_text(message, state, message.text or "")
     except Exception as err:
         logging.exception("participant_contribute_handler failed: %s", err)
         await message.answer(
@@ -3535,13 +3823,7 @@ async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMC
 
 
 async def participant_confirm_text_handler(message: Message, state: FSMContext) -> None:
-    await handle_corner_guidance(
-        message,
-        state,
-        kind="action_required",
-        role="participant",
-        flow_step="participant_confirm",
-    )
+    await ingest_user_text(message, state, message.text or "")
 
 
 def _media_user_message(message: Message) -> str:
@@ -3605,7 +3887,7 @@ async def unsupported_media_handler(message: Message, state: FSMContext) -> None
 async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
     try:
         logging.info("Organizer dump received chat_id=%s", message.chat.id)
-        await route_organizer_text_message(message, state, flow_step="organizer_dump")
+        await ingest_user_text(message, state, message.text or "")
     except Exception as err:
         logging.exception("organizer_dump_handler failed: %s", err)
         await message.answer(
@@ -3617,7 +3899,7 @@ async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
 
 async def organizer_clarify_handler(message: Message, state: FSMContext) -> None:
     try:
-        await route_organizer_text_message(message, state, flow_step="organizer_clarify")
+        await ingest_user_text(message, state, message.text or "")
     except Exception as err:
         logging.exception("organizer_clarify_handler failed: %s", err)
         await message.answer(
@@ -3634,93 +3916,7 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
         await state.get_state(),
         (message.text or "")[:80],
     )
-    normalized = normalize_text(message.text or "")
-    if normalized in {"начать", "start", "/start"}:
-        await start_handler(message, state)
-        return
-    if await handle_menu_shortcuts(message, state):
-        return
-
-    load_events(merge=True)
-    data = await state.get_data()
-    preferred = data.get("event_code")
-    recovered = get_latest_event_for_chat(
-        message.chat.id,
-        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
-    )
-    if not recovered:
-        kind = input_kind.classify_input_kind(
-            message.text or "",
-            role="organizer",
-            flow_step="unknown",
-            brief_complete=False,
-        )
-        if kind == "substantive" and text_looks_like_brief_submission(message.text or ""):
-            async with ui_feedback.thinking(message):
-                event_code = await bootstrap_organizer_event(message, state)
-                flow_step = await restore_organizer_fsm_state(state, event_code)
-                await route_organizer_text_message(message, state, flow_step=flow_step)
-            return
-        await handle_corner_guidance(
-            message,
-            state,
-            kind=kind if kind != "substantive" else "noise",
-            role="organizer",
-            flow_step="no_active_trip",
-        )
-        return
-
-    async with ui_feedback.thinking(message):
-        await _text_fallback_handler_impl(message, state)
-
-
-async def _text_fallback_handler_impl(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    preferred = data.get("event_code")
-    recovered = get_latest_event_for_chat(
-        message.chat.id,
-        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
-    )
-    if recovered:
-        event_code, event, role = recovered
-        if role == "organizer":
-            flow_step = await restore_organizer_fsm_state(state, event_code)
-            await route_organizer_text_message(message, state, flow_step=flow_step)
-            return
-        if role == "participant":
-            participant_name = (
-                message.from_user.full_name
-                if message.from_user and message.from_user.full_name
-                else str(message.chat.id)
-            )
-            await state.update_data(
-                role="participant",
-                event_code=event_code,
-                participant_name=participant_name,
-            )
-            await state.set_state(FlowState.participant_contribute)
-            await route_participant_text_message(message, state)
-            return
-
-    kind = input_kind.classify_input_kind(
-        message.text or "",
-        role="organizer",
-        flow_step="unknown",
-        brief_complete=False,
-    )
-    if kind == "substantive" and text_looks_like_brief_submission(message.text or ""):
-        event_code = await bootstrap_organizer_event(message, state)
-        flow_step = await restore_organizer_fsm_state(state, event_code)
-        await route_organizer_text_message(message, state, flow_step=flow_step)
-        return
-
-    await handle_corner_guidance(
-        message,
-        state,
-        kind=kind if kind != "substantive" else "noise",
-        role="organizer",
-        flow_step="no_active_trip",
-    )
+    await ingest_user_text(message, state, message.text or "")
 
 
 async def cancel_handler(message: Message, state: FSMContext) -> None:
@@ -3767,9 +3963,10 @@ async def main() -> None:
     dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
     dp.message.register(my_events_handler, F.text.func(is_my_events_text))
     dp.message.register(help_handler, F.text.func(is_help_text))
+    dp.message.register(voice_message_handler, F.voice)
     dp.message.register(
         unsupported_media_handler,
-        F.photo | F.document | F.voice | F.video | F.sticker | F.animation,
+        F.photo | F.document | F.video | F.sticker | F.animation,
     )
     dp.message.register(
         participant_confirm_text_handler,
@@ -3804,6 +4001,8 @@ async def main() -> None:
     dp.callback_query.register(help_report_callback_handler, F.data == "help:report")
     dp.callback_query.register(participant_confirm_callback_handler, F.data == "participant:confirm")
     dp.callback_query.register(participant_edit_callback_handler, F.data == "participant:edit")
+    dp.callback_query.register(voc_rate_callback_handler, F.data.startswith("voc:rate:"))
+    dp.callback_query.register(voc_skip_callback_handler, F.data == "voc:skip")
 
     await bot.set_my_commands(
         [

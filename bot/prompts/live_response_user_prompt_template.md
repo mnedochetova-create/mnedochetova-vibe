@@ -33,5 +33,7 @@ recent_messages_json:
 user_message:
 {{user_message}}
 
+language_code: {{language_code}}
+
 ---
 Сформируй один живой ответ по правилам system prompt. Верни только JSON: assistant_text, tone, confidence.

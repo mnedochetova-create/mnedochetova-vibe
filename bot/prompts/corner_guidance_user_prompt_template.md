@@ -22,5 +22,8 @@ active_trip_json:
 user_message:
 {{user_message}}
 
+language_code: {{language_code}}
+{{locale_instruction}}
+
 ---
 Сформируй ответ по system prompt (режим corner). Только JSON.

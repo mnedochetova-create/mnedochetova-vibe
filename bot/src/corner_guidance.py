@@ -63,6 +63,8 @@ def build_corner_user_prompt(context: Dict[str, Any]) -> str:
         "{{trips_json}}": _as_json(context.get("trips_json", [])),
         "{{active_trip_json}}": _as_json(context.get("active_trip_json", {})),
         "{{user_message}}": str(context.get("user_message", "")),
+        "{{language_code}}": str(context.get("language_code", "ru")),
+        "{{locale_instruction}}": str(context.get("locale_instruction", "")),
     }
     out = template
     for key, value in replacements.items():
@@ -198,7 +200,10 @@ def generate_corner_response(
             "confidence": 1.0,
             "source": "fallback_no_key",
         }
-    system_prompt = get_corner_system_prompt()
+    import user_locale
+
+    lang = str(context.get("language_code") or "ru")
+    system_prompt = get_corner_system_prompt() + "\n\n" + user_locale.llm_locale_instruction(lang)
     user_prompt = build_corner_user_prompt(context)
     if not system_prompt or not user_prompt:
         return {

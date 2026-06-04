@@ -69,6 +69,7 @@ def _build_user_prompt(context: Dict[str, Any]) -> str:
         "{{conflicts_json}}": _as_json(context.get("conflicts_json", [])),
         "{{recent_messages_json}}": _as_json(context.get("recent_messages_json", [])),
         "{{user_message}}": str(context.get("user_message", "")),
+        "{{language_code}}": str(context.get("language_code", "ru")),
     }
     out = template
     for key, value in replacements.items():
@@ -137,7 +138,10 @@ def generate_live_response(context: Dict[str, Any], fallback_text: str) -> Dict[
             "confidence": 1.0,
             "source": "fallback_no_key",
         }
-    system_prompt = get_live_system_prompt()
+    import user_locale
+
+    lang = str(context.get("language_code") or "ru")
+    system_prompt = get_live_system_prompt() + "\n\n" + user_locale.llm_locale_instruction(lang)
     user_prompt = _build_user_prompt(context)
     if not system_prompt or not user_prompt:
         return {

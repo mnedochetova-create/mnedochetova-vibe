@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-05-28-corner-defer-visibility
+ENV BOT_UI_VERSION=2026-05-28-voice-voc-locale
 
 WORKDIR /app
 
