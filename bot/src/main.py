@@ -153,6 +153,33 @@ def user_display_first_name(user: Any) -> str:
     return (getattr(user, "first_name", None) or "").strip()
 
 
+def organizer_display_name_from_user(user: Any) -> str:
+    """Имя организатора для текстов участнику (имя из Telegram)."""
+    first = user_display_first_name(user)
+    if first:
+        return first
+    if not user:
+        return ""
+    return (getattr(user, "full_name", None) or "").strip()
+
+
+def organizer_display_name_for_event(
+    event: Dict[str, Any],
+    *,
+    user: Any = None,
+) -> str:
+    from_user = organizer_display_name_from_user(user) if user else ""
+    if from_user:
+        return from_user
+    return str((event or {}).get("organizer_name") or "").strip()
+
+
+def ensure_organizer_name_on_event(event: Dict[str, Any], user: Any = None) -> None:
+    name = organizer_display_name_from_user(user) if user else ""
+    if name:
+        event["organizer_name"] = name
+
+
 def format_start_greeting(user: Any) -> str:
     name = user_display_first_name(user)
     hello = f"Привет, {html.escape(name)}!" if name else "Привет!"
@@ -199,15 +226,30 @@ def build_invite_share_cta_html(invite_link: str) -> str:
     return f'👉 Присоединиться к поездке — <a href="{link_esc}">кнопка ниже</a>.'
 
 
+def build_invite_share_organizer_phrase(
+    organizer_name: Optional[str] = None,
+    *,
+    html_mode: bool = False,
+) -> str:
+    if organizer_name:
+        name = html.escape(organizer_name) if html_mode else organizer_name
+        if html_mode:
+            return f"Организатор <b>{name}</b> собрал базовый бриф"
+        return f"Организатор {name} собрал базовый бриф"
+    return "Организатор собрал базовый бриф"
+
+
 def build_invite_share_body_plain(
     invite_link: str,
     *,
     trip_title: Optional[str] = None,
+    organizer_name: Optional[str] = None,
 ) -> str:
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
+    org_phrase = build_invite_share_organizer_phrase(organizer_name, html_mode=False)
     return (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
-        "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
+        f"{org_phrase} — в боте посмотри, что уже собрано, "
         "и допиши одним сообщением, что важно лично тебе."
     )
 
@@ -219,7 +261,14 @@ def build_invite_share_html_for_event(event: Dict[str, Any]) -> str:
     brief = dict((event or {}).get("brief") or {})
     brief_domestic_route.prepare_brief_for_display(brief, event=event)
     trip_title = brief_display.get_trip_title(brief)
-    body = build_invite_share_body_plain(invite_link, trip_title=trip_title)
+    organizer_name = organizer_display_name_for_event(event)
+    trip_label = f"«{html.escape(trip_title)}»" if trip_title else "нашей поездке"
+    org_phrase = build_invite_share_organizer_phrase(organizer_name, html_mode=True)
+    body = (
+        f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
+        f"{org_phrase} — в боте посмотри, что уже собрано, "
+        "и допиши одним сообщением, что важно лично тебе."
+    )
     return f"{body}\n\n{build_invite_share_cta_html(invite_link)}"
 
 
@@ -227,15 +276,13 @@ def build_invite_share_text(
     invite_link: str,
     *,
     trip_title: Optional[str] = None,
+    organizer_name: Optional[str] = None,
     include_link: bool = False,
     for_native_share: bool = False,
 ) -> str:
     """Текст приглашения для участника."""
-    trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
-    body = (
-        f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
-        "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
-        "и допиши одним сообщением, что важно лично тебе."
+    body = build_invite_share_body_plain(
+        invite_link, trip_title=trip_title, organizer_name=organizer_name
     )
     if for_native_share:
         return f"{body}\n\n👉 Присоединиться к поездке — кнопка ниже."
@@ -268,6 +315,7 @@ def invite_share_text_for_event(
     return build_invite_share_text(
         invite_link,
         trip_title=trip_title,
+        organizer_name=organizer_display_name_for_event(event),
         include_link=include_link,
         for_native_share=False,
     )
@@ -281,7 +329,10 @@ def invite_share_text_for_native_share(event: Dict[str, Any]) -> str:
     brief_domestic_route.prepare_brief_for_display(brief, event=event)
     trip_title = brief_display.get_trip_title(brief)
     return build_invite_share_text(
-        invite_link, trip_title=trip_title, for_native_share=True
+        invite_link,
+        trip_title=trip_title,
+        organizer_name=organizer_display_name_for_event(event),
+        for_native_share=True,
     )
 
 
@@ -618,6 +669,7 @@ def _hydrate_organizer_event_from_fsm(
         "participants": {},
         "invite_link": invite_link,
         "brief": data.get("brief") if isinstance(data.get("brief"), dict) else {},
+        "organizer_name": data.get("organizer_name"),
     }
     touch_event(EVENTS[preferred_code])
     save_events()
@@ -717,6 +769,7 @@ async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
         "organizer_dump": None,
         "participants": {},
         "invite_link": invite_link,
+        "organizer_name": organizer_display_name_from_user(message.from_user) or None,
     }
     touch_event(EVENTS[event_code])
     save_events()
@@ -2007,6 +2060,7 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         "participants": {},
         "invite_link": invite_link,
         "brief": {},
+        "organizer_name": organizer_display_name_from_user(message.from_user) or None,
     }
     touch_event(EVENTS[event_code])
     save_events()
@@ -2045,6 +2099,7 @@ async def send_or_update_invite_forward_card(
 ) -> bool:
     """HTML-карточка для пересылки: «кнопка ниже» — настоящая ссылка (t.me/share не умеет)."""
     ensure_event_invite_link(event)
+    ensure_organizer_name_on_event(event, message.from_user)
     invite_link = str(event.get("invite_link") or "").strip()
     if not invite_link:
         return False

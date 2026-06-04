@@ -62,9 +62,11 @@ def test_build_invite_share_html_has_link_in_button_below(monkeypatch) -> None:
     event = {
         "invite_link": "https://t.me/MyTravelLabBot?start=join_x",
         "brief": {"trip_title": "Во Францию с семьёй"},
+        "organizer_name": "Мария",
     }
     html_text = main.build_invite_share_html_for_event(event)
     assert "Во Францию с семьёй" in html_text
+    assert "Организатор <b>Мария</b> собрал" in html_text
     assert '<a href="https://t.me/MyTravelLabBot?start=join_x">кнопка ниже</a>' in html_text
     assert "https://t.me/" not in html_text.replace(
         'href="https://t.me/MyTravelLabBot?start=join_x"', ""
