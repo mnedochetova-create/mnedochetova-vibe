@@ -160,7 +160,13 @@ def organizer_display_name_from_user(user: Any) -> str:
         return first
     if not user:
         return ""
-    return (getattr(user, "full_name", None) or "").strip()
+    full = (getattr(user, "full_name", None) or "").strip()
+    if full:
+        return full
+    username = (getattr(user, "username", None) or "").strip()
+    if username:
+        return f"@{username}"
+    return ""
 
 
 def organizer_display_name_for_event(
@@ -174,10 +180,25 @@ def organizer_display_name_for_event(
     return str((event or {}).get("organizer_name") or "").strip()
 
 
-def ensure_organizer_name_on_event(event: Dict[str, Any], user: Any = None) -> None:
+async def ensure_organizer_name_on_event(
+    event: Dict[str, Any],
+    user: Any = None,
+    *,
+    bot: Optional[Bot] = None,
+) -> None:
     name = organizer_display_name_from_user(user) if user else ""
+    if not name and bot is not None:
+        chat_id = event.get("organizer_chat_id")
+        if chat_id:
+            try:
+                chat = await bot.get_chat(chat_id)
+                name = organizer_display_name_from_user(chat)
+            except Exception:
+                logging.debug("get_chat for organizer_name failed", exc_info=True)
     if name:
         event["organizer_name"] = name
+        touch_event(event)
+        save_events()
 
 
 def format_start_greeting(user: Any) -> str:
@@ -410,8 +431,9 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Нажми <b>📤 Поделиться ↗️</b> — бот пришлёт сообщение для пересылки.\n"
-        "В нём слова «кнопка ниже» — кликабельная ссылка для входа в поездку."
+        "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
+        "В тексте: организатор по имени, ссылка в словах «кнопка ниже».\n"
+        "Кнопка «📤 Поделиться ↗️» — обновить карточку, если менялись вводные."
     )
 
 
@@ -2099,7 +2121,7 @@ async def send_or_update_invite_forward_card(
 ) -> bool:
     """HTML-карточка для пересылки: «кнопка ниже» — настоящая ссылка (t.me/share не умеет)."""
     ensure_event_invite_link(event)
-    ensure_organizer_name_on_event(event, message.from_user)
+    await ensure_organizer_name_on_event(event, message.from_user, bot=message.bot)
     invite_link = str(event.get("invite_link") or "").strip()
     if not invite_link:
         return False
@@ -2146,11 +2168,10 @@ async def _remove_invite_forward_card(bot: Bot, event: Dict[str, Any]) -> None:
 
 
 async def _patch_stale_invite_messages(bot: Bot, event: Dict[str, Any]) -> None:
-    """Обновить текст/кнопку шага приглашения и удалить старую карточку пересылки."""
+    """Обновить текст/кнопку шага приглашения."""
     chat_id = event.get("organizer_chat_id")
     if not chat_id:
         return
-    await _remove_invite_forward_card(bot, event)
     instruction_id = event.get("invite_instruction_message_id")
     event_number = event.get("event_number")
     new_text = format_invite_step_message(event_number, event=event)
@@ -2225,8 +2246,11 @@ async def show_organizer_invite_step(
             sent_instruction_id = sent.message_id
     if sent_instruction_id and event.get("organizer_chat_id"):
         event["invite_instruction_message_id"] = sent_instruction_id
+        event["organizer_chat_id"] = message.chat.id
         touch_event(event)
         save_events()
+    await ensure_organizer_name_on_event(event, message.from_user, bot=message.bot)
+    await send_or_update_invite_forward_card(message, event)
     await log_session_action(
         message.bot,
         message,

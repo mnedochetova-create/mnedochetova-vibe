@@ -34,8 +34,24 @@ def test_invite_step_message_short() -> None:
     text = main.format_invite_step_message(3)
     assert "#3" in text
     assert "Поделиться ↗️" in text
-    assert "пересылки" in text
+    assert "Переслать" in text
     assert "кнопка ниже" in text
+
+
+def test_organizer_display_name_fallbacks() -> None:
+    class U:
+        first_name = ""
+        full_name = "Maria Nedochetova"
+        username = "maria_n"
+
+    assert main.organizer_display_name_from_user(U()) == "Maria Nedochetova"
+
+    class U2:
+        first_name = ""
+        full_name = ""
+        username = "maria_n"
+
+    assert main.organizer_display_name_from_user(U2()) == "@maria_n"
 
 
 def test_invite_step_message_includes_trip_title() -> None:

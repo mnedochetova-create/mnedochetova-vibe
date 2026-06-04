@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-05-28-invite-organizer-name
+ENV BOT_UI_VERSION=2026-05-28-invite-org-name-v2
 
 WORKDIR /app
 
