@@ -149,6 +149,8 @@ def test_invite_forward_card_already_sent() -> None:
 
 
 def test_telegram_share_url_for_event_fits_telegram_button_limit(monkeypatch) -> None:
+    from urllib.parse import parse_qs, urlparse
+
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelab_bot")
     event = {
         "invite_link": "https://t.me/MyTravelab_bot?start=join_d83b29",
@@ -159,7 +161,12 @@ def test_telegram_share_url_for_event_fits_telegram_button_limit(monkeypatch) ->
     }
     url = main.telegram_share_url_for_event(event)
     assert url is not None
-    assert len(url) <= main.TELEGRAM_INLINE_BUTTON_URL_MAX
+    assert main._share_button_url_fits(url)
+    query = parse_qs(urlparse(url).query)
+    assert query["url"][0] == event["invite_link"]
+    from urllib.parse import unquote
+
+    assert "Мария" in unquote(query["text"][0])
     kb = main.invite_ready_keyboard(event)
     assert kb.inline_keyboard[0][0].url == url
 
