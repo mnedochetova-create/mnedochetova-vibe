@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0
+
+### Bot
+
+- Corner-сценарии: defer брифа, скрытие полей, supplement, LLM corner guidance с контекстом поездок.
+- Голосовые сообщения: Whisper → единый текстовый путь (`ingest_user_text`).
+- Язык ответов LLM по `language_code` Telegram (live + corner).
+- VOC после готового брифа: оценка 1–5 и открытый отзыв.
+- Merger: только conflicts / open_questions / сводка организатору; кнопка «Принять сводку» (без автозаписи в плоский бриф).
+- Парсер участника и rules-by-role; накопление `organizer_structured_history`.
+- Индикатор «Думаю…» на долгих путях; правки invite/share (лимит 512 байт).
+- Версия в `/start`: `build:` из файла `VERSION` (`app_version.py`).
+
+### Docs
+
+- Синхронизация `BRIEF_PARSING_ROADMAP.md`, `MVP_BOT_SPEC.md`, `PRODUCT_CARD.md`.
+- [`docs/VERSIONING.md`](docs/VERSIONING.md) — политика версий и релизов.
+
 ## 0.3.0
 
 - Family travel bot: новая архитектура меню (нижнее меню, burger `/start` `/help` `/cancel`, inline по сценарию).

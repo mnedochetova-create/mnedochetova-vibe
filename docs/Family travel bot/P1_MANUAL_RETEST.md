@@ -2,7 +2,7 @@
 
 **Цель:** закрыть P1 автотестами в CI + выборочным прогоном в Telegram после деплоя.
 
-**Статус roadmap:** фазы A–B и merger/VOC/voice — в коде; колонка «В боте» ниже — для smoke после каждого значимого деплоя (build в `/start`, см. `BOT_UI_VERSION` в `Dockerfile`).
+**Статус roadmap:** фазы A–B и merger/VOC/voice — в коде; колонка «В боте» ниже — для smoke после деплоя (в `/start` строка `build:` = semver из [`VERSION`](../../VERSION), см. [`docs/VERSIONING.md`](../../docs/VERSIONING.md)).
 
 ## Автоматический ретест (CI)
 

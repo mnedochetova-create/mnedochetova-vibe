@@ -24,6 +24,10 @@
 3. Выбери стек для бота и создай рабочий код внутри `bot/`.
 4. Добавь запуск, тесты и CI по мере развития проекта.
 
+## Версия
+
+Текущая версия: файл [`VERSION`](VERSION). Политика semver, теги и деплой: [`docs/VERSIONING.md`](docs/VERSIONING.md).
+
 ## Автоматические релизы (Release Please)
 
 Релизы собирает workflow [`.github/workflows/release-please.yml`](.github/workflows/release-please.yml): открывается PR с версией и `CHANGELOG`, после мержа PR создаётся GitHub Release.

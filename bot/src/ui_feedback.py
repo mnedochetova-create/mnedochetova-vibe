@@ -11,8 +11,10 @@ from typing import AsyncIterator, Optional
 from aiogram.enums import ChatAction
 from aiogram.types import LinkPreviewOptions, Message
 
-# Меняется при каждом деплое — можно проверить в /help, что бот обновился.
-BOT_UI_VERSION = os.getenv("BOT_UI_VERSION", "2026-05-28-voice-voc-locale")
+from app_version import resolve_app_version
+
+# См. VERSION в корне репо; переопределение: BOT_UI_VERSION (Railway).
+BOT_UI_VERSION = resolve_app_version()
 
 # Текстовый статус как у Mira («Думаю»), без медиа. Отключить: THINKING_STATUS=0
 THINKING_STATUS_ENABLED = os.getenv("THINKING_STATUS", "1").strip().lower() not in {

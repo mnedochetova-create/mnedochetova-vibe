@@ -22,7 +22,7 @@
 
 Минимум для бота: `BOT_TOKEN`. Парсинг: `PARSER_MODE=role_llm`, `LLM_API_KEY` — см. `bot/README.md`, `PARSING_SPEC.md`.
 
-**Не задавайте** переменную `BOT_UI_VERSION` в Railway, если не нужно явно — иначе она **перебивает** значение из `Dockerfile`, и в боте будет старый `build:` при новом коде.
+**Не задавайте** переменную `BOT_UI_VERSION` в Railway, если не нужно явно — иначе она **перебивает** [`VERSION`](../VERSION) из образа, и в `/start` останется старый `build:` при новом коде. См. [`docs/VERSIONING.md`](../docs/VERSIONING.md).
 
 ## Persistent Volume для `events.json` (обязательно на проде)
 
