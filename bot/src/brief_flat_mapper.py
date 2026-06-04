@@ -381,11 +381,19 @@ def participant_structured_to_flat(data: Dict[str, Any]) -> Dict[str, Any]:
     cons = data.get("personal_constraints") if isinstance(data.get("personal_constraints"), dict) else {}
 
     dest_label = _direction_label(prefs.get("destination"))
-    if dest_label:
+    primary_label = _direction_label(facts.get("destination_primary")) or dest_label
+    if primary_label:
+        out["destination_primary"] = primary_label
         out.setdefault("activity_preferences", [])
-        pref = f"предпочтение по направлению: {dest_label}"
+        pref = f"предпочтение по направлению: {primary_label}"
         if pref not in out["activity_preferences"]:
             out["activity_preferences"].append(pref)
+
+    alts_raw = _unwrap(facts.get("destination_alternatives"))
+    if isinstance(alts_raw, list) and alts_raw:
+        alts = [str(a).strip() for a in alts_raw if not _is_empty(a)]
+        if alts:
+            out["destination_alternatives"] = alts
 
     _map_activity_and_constraints(prefs, cons, out)
     _map_preferences_tail(prefs, facts, out)

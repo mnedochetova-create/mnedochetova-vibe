@@ -398,10 +398,34 @@ def _has_destination_hint(brief: Dict[str, Any]) -> bool:
     return bool(brief_stay_enrich._detect_destinations(t) or brief_stay_enrich._detect_cities(t))
 
 
-def extract_brief_rule_based(text: str) -> Dict[str, Any]:
+_PARTICIPANT_STRIP_RULE_KEYS = frozenset(
+    {
+        "adults",
+        "kids_count",
+        "kid_age",
+        "party_preferences",
+        "destination_primary",
+        "destination_alternatives",
+        "destination_candidates",
+        "route_combo_planning",
+        "trip_title",
+    }
+)
+
+
+def _filter_rule_based_for_participant(brief: Dict[str, Any]) -> Dict[str, Any]:
+    """Rules-слой для участника: не заполняем базовый состав/комбо группы."""
+    out = dict(brief or {})
+    for key in _PARTICIPANT_STRIP_RULE_KEYS:
+        out.pop(key, None)
+    return out
+
+
+def extract_brief_rule_based(text: str, *, role: str = "organizer") -> Dict[str, Any]:
     t = (text or "").lower()
     brief: Dict[str, Any] = {}
     brief["context_raw"] = (text or "").strip()
+    is_participant = role == "participant"
 
     if re.search(
         r"бюджет\s+гибк|гибк\w*\s+бюджет|бюджет\s+не\s+принципиал|"
@@ -475,24 +499,35 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
         if budget_value is not None:
             brief["budget_rub_max"] = _money_to_rub(budget_value, budget_suffix)
 
-    m = re.search(r"(\d+)\s*взросл", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*девуш", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*коллег", t)
-    if m:
-        brief["adults"] = int(m.group(1))
-    m = re.search(r"(\d+)\s*(?:дет|реб)", t)
-    if m:
-        brief["kids_count"] = int(m.group(1))
-    m = re.search(r"(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)", t)
-    if m:
-        brief["kid_age"] = int(m.group(1))
-        brief.setdefault("kids_count", 1)
-
-    _infer_family_composition(t, brief)
+    if not is_participant:
+        m = re.search(r"(\d+)\s*взросл", t)
+        if m:
+            brief["adults"] = int(m.group(1))
+        m = re.search(r"(\d+)\s*девуш", t)
+        if m:
+            brief["adults"] = int(m.group(1))
+        m = re.search(r"(\d+)\s*коллег", t)
+        if m:
+            brief["adults"] = int(m.group(1))
+        m = re.search(r"(\d+)\s*(?:дет|реб)", t)
+        if m:
+            brief["kids_count"] = int(m.group(1))
+        m = re.search(r"(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)", t)
+        if m:
+            brief["kid_age"] = int(m.group(1))
+            brief.setdefault("kids_count", 1)
+        _infer_family_composition(t, brief)
+    else:
+        if re.search(r"еду\s+один|только\s+я\b|я\s+один", t):
+            brief["adults"] = 1
+        m_kid = re.search(
+            r"(?:со\s+мной|у\s+меня)\s+(?:реб[её]нок|дет[а-я]*)\s*(\d{1,2})\s*(?:лет|года?)",
+            t,
+        )
+        if m_kid:
+            brief["kid_age"] = int(m_kid.group(1))
+            brief["kids_count"] = 1
+            brief["adults"] = 1
 
     for mon in _MONTH_STEM_TO_FULL:
         if mon in t:
@@ -698,7 +733,7 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if "недел" in t and ("с мам" in t or "мамой" in t):
         ensure_party("семья").setdefault("notes", []).append("неделя с мамой")
 
-    if parties:
+    if parties and not is_participant:
         brief["party_preferences"] = parties
 
     destinations = _detect_destinations(t)
@@ -758,6 +793,8 @@ def extract_brief_rule_based(text: str) -> Dict[str, Any]:
     if activity_preferences:
         brief["activity_preferences"] = activity_preferences
 
+    if is_participant:
+        return _filter_rule_based_for_participant(brief)
     return brief
 
 
@@ -1052,7 +1089,7 @@ def parse_message_to_brief(
     global LAST_PARSER_MODE
     if _is_completion_only_message(text):
         return {}, {}
-    rule_based = extract_brief_rule_based(text)
+    rule_based = extract_brief_rule_based(text, role=role)
     structured: Dict[str, Any] = {}
     llm_flat: Dict[str, Any] = {}
 
@@ -1075,7 +1112,10 @@ def parse_message_to_brief(
     ctx = _brief_context_text(flat, text)
     brief_transport.sync_trip_transport(flat, ctx)
     brief_transport.reconcile_hours_fields(flat, ctx)
-    brief_display.sync_trip_title(flat)
+    if role != "participant":
+        brief_display.sync_trip_title(flat)
+    else:
+        flat.pop("trip_title", None)
     return flat, structured
 
 

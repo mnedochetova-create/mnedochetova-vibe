@@ -27,6 +27,7 @@
 - При сбое LLM основной сценарий остаётся работоспособным (fallback на rules).
 - Rule-based (всегда): страны, города, даты → `stay_experience` через `brief_stay_enrich.py`.
 - LLM (`role_llm`): `preferences.stay_experience` и/или `location_preferences` + `accommodation_preferences` → flat `stay_experience` в `brief_flat_mapper.py`, затем enrich.
+- Rule-based для участника: `extract_brief_rule_based(..., role="participant")` — без автозаполнения состава группы и `party_preferences`; перелёт/ограничения/документы сохраняются.
 
 ### 0.1 Live responses (формулировки, не парсинг)
 

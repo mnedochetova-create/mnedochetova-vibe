@@ -19,13 +19,16 @@
 - **Скрытие полей:** `brief_visibility.py` → `event.field_visibility` → урезанный бриф для участников (`format_brief_for_participant`) и plain-share (`format_brief_plain_for_share`); организатор видит полный бриф.
 - **Отложить бриф:** `brief_deferred_at`, `invite_allowed_with_gaps` — invite с черновиком без полного missing.
 - участник: `participant_contribute` → `route_participant_text_message`;
-- recovery в `text_fallback_handler` — та же логика intent.
+- `participant_confirm` — статические экраны подтверждения (live не вызывается);
+- организатор: `voc_feedback` / `organizer_voc_rating` — живой текст отзыва после брифа (если live включён);
+- recovery в `text_fallback_handler` — та же логика intent;
+- голосовые сообщения транскрибируются в текст до intent/corner (см. `voice_input.py`).
 
 ## Live LLM
 
 | Файл | Роль в API |
 |------|------------|
-| `live_response_system_prompt.md` | **system** — правила, тон, JSON; режим `conversation` |
+| `live_response_system_prompt.md` | **system** — правила, тон, JSON; `conversation`, `mixed`, `voc_feedback`; язык из `language_code` |
 | `live_response_user_prompt_template.md` | **user** — данные (бриф, missing, сообщение) |
 
 На шагах **brief_input** live **не вызывается** — только статические строки (`STATIC_*` в `main.py`).
