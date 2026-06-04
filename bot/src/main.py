@@ -28,6 +28,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import brief_flat_mapper
+import brief_merger
 import brief_parser
 import brief_pipeline
 import brief_stay_enrich
@@ -972,24 +973,72 @@ def parse_message_to_brief(
     )
 
 
-def run_group_merger_for_event(event: Dict[str, Any]) -> List[str]:
-    """Merger только для группового брифа (после вклада участника)."""
-    participants = event.get("participant_inputs_structured") or []
-    base = event.get("base_brief_structured") or {}
-    if not participants:
-        return list(event.get("group_conflicts") or [])
-
-    merged = brief_pipeline.merge_brief_inputs(
-        base_brief_json=base,
-        participant_inputs_json=participants,
-        new_input_json=participants[-1],
-        current_event_status=_event_status_info(event).get("key", "active"),
+def run_group_merger_for_event(event: Dict[str, Any]) -> tuple[List[str], str]:
+    """
+    Merger: conflicts + open_questions на событии; не меняет event['brief'].
+    Возвращает (conflicts, organizer_update_text для уведомления).
+    """
+    status = _event_status_info(event).get("key", "active")
+    conflicts, _questions, update_text = brief_merger.run_merger_for_event(
+        event, current_event_status=status
     )
-    if merged:
-        event["merged_brief_structured"] = merged
-    conflicts = brief_flat_mapper.conflicts_from_merger(merged or {})
-    event["group_conflicts"] = conflicts
-    return conflicts
+    return conflicts, update_text
+
+
+async def notify_organizer_merger_summary(
+    bot: Bot,
+    event_code: str,
+    *,
+    participant_name: str = "",
+) -> None:
+    """Сводка merger + кнопка «Принять сводку» (без автозаписи в brief)."""
+    event = EVENTS.get(event_code)
+    if not event:
+        return
+    update_text = str(event.get("merger_pending_update_text") or "").strip()
+    if not brief_merger.should_notify_organizer_merger(event, update_text):
+        return
+    chat_id = event.get("organizer_chat_id")
+    if not chat_id:
+        return
+    event_number = event.get("event_number")
+    num_line = f" поездке #{event_number}" if isinstance(event_number, int) else ""
+    who = f" от <b>{html.escape(participant_name)}</b>" if participant_name else ""
+    header = f"👥 <b>Сводка по участникам{num_line}</b>{who}\n\n"
+    footer = (
+        "\n\n<i>Бриф в карточке не менялся автоматически.</i> "
+        "Если сводка верна — нажми «Принять сводку»; иначе уточни у участника или дополни бриф сам."
+    )
+    try:
+        await bot.send_message(
+            int(chat_id),
+            header + update_text + footer,
+            reply_markup=merger_summary_keyboard(event_code),
+        )
+        brief_merger.mark_merger_notified(event, update_text)
+        touch_event(event)
+        save_events()
+    except Exception as err:
+        logging.warning("notify_organizer_merger_summary failed: %s", err)
+
+
+def merger_summary_keyboard(event_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Принять сводку",
+                    callback_data=f"merger:accept:{event_code}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Позже",
+                    callback_data=f"merger:dismiss:{event_code}",
+                )
+            ],
+        ]
+    )
 
 
 async def emit_parse_log(
@@ -1244,7 +1293,7 @@ async def _apply_organizer_brief_from_message(
 
     if event_code and event_code in EVENTS:
         if structured:
-            EVENTS[event_code]["base_brief_structured"] = structured
+            brief_merger.append_organizer_structured(EVENTS[event_code], structured)
         if flow_step == "organizer_dump" and brief_updated:
             prev_dump = EVENTS[event_code].get("organizer_dump")
             if isinstance(prev_dump, str) and prev_dump.strip():
@@ -1506,7 +1555,7 @@ async def handle_organizer_conversation(
         change_info = live_response.detect_field_changes(previous_brief, incoming, brief)
         if event_code and event_code in EVENTS:
             if structured:
-                EVENTS[event_code]["base_brief_structured"] = structured
+                brief_merger.append_organizer_structured(EVENTS[event_code], structured)
             EVENTS[event_code]["brief"] = brief
             touch_event(EVENTS[event_code])
             save_events()
@@ -1736,9 +1785,9 @@ async def handle_participant_brief_input(
             participant_inputs,
             structured,
         )
-        merger_conflicts = run_group_merger_for_event(event)
-        if merger_conflicts:
-            updated_brief["group_conflicts"] = merger_conflicts
+        merger_conflicts, merger_update_text = run_group_merger_for_event(event)
+        updated_brief["group_conflicts"] = merger_conflicts
+        updated_brief["group_open_questions"] = list(event.get("group_open_questions") or [])
     event["brief"] = updated_brief
 
     updates = event.setdefault("participant_updates", {})
@@ -1786,6 +1835,12 @@ async def handle_participant_brief_input(
     body = f"{lead}\n\n{brief_html}\n\nПроверь, пожалуйста: всё верно?{missing_block}"
     await message.answer(body, reply_markup=participant_confirm_keyboard())
     await save_dialog_turn(state, bot_text=body)
+    if structured:
+        await notify_organizer_merger_summary(
+            message.bot,
+            event_code,
+            participant_name=participant_name,
+        )
 
 
 async def handle_participant_conversation(message: Message, state: FSMContext) -> None:
@@ -1820,12 +1875,18 @@ async def handle_participant_conversation(message: Message, state: FSMContext) -
                 participant_inputs,
                 structured,
             )
-            merger_conflicts = run_group_merger_for_event(event)
-            if merger_conflicts:
-                updated_brief["group_conflicts"] = merger_conflicts
+            merger_conflicts, _merger_update = run_group_merger_for_event(event)
+            updated_brief["group_conflicts"] = merger_conflicts
+            updated_brief["group_open_questions"] = list(event.get("group_open_questions") or [])
         event["brief"] = updated_brief
         touch_event(event)
         save_events()
+        if structured:
+            await notify_organizer_merger_summary(
+                message.bot,
+                event_code,
+                participant_name=participant_name,
+            )
 
     missing = missing_brief_fields(updated_brief)
     parser_result = live_response.build_parser_result(
@@ -2086,6 +2147,18 @@ def format_brief_unified(
         lines.append("\n⚠️ <b>Расхождения в группе</b>")
         for item in conflicts:
             lines.append(f"• {esc(item)}")
+
+    open_questions = brief.get("group_open_questions") or []
+    if open_questions:
+        lines.append("\n❓ <b>Открытые вопросы</b>")
+        for item in open_questions:
+            lines.append(f"• {esc(item)}")
+
+    if audience == "organizer" and event:
+        accepted = str(event.get("organizer_accepted_group_summary") or "").strip()
+        if accepted:
+            lines.append("\n📋 <b>Принятая сводка по группе</b>")
+            lines.append(accepted)
 
     participant_preferences = brief.get("participant_preferences") or {}
     if participant_preferences and "participant_block" not in hidden:
@@ -3756,6 +3829,62 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
         )
 
 
+async def merger_accept_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = callback.data or ""
+    if not data.startswith("merger:accept:"):
+        return
+    event_code = data.removeprefix("merger:accept:")
+    event = EVENTS.get(event_code)
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    summary = str(event.get("merger_pending_update_text") or "").strip()
+    if not summary:
+        await callback.message.answer("Сводка уже недоступна — возможно, её приняли ранее.")
+        return
+    event["organizer_accepted_group_summary"] = summary
+    event["merger_pending_accepted_at"] = now_ts()
+    event.pop("merger_pending_update_text", None)
+    touch_event(event)
+    save_events()
+    await callback.message.answer(
+        "✅ <b>Сводку приняла.</b>\n\n"
+        "Она сохранена в карточке поездки для организатора. "
+        "Плоский бриф автоматически не менялся — при необходимости дополни вводные вручную.",
+        reply_markup=main_menu_keyboard(),
+    )
+    await log_session_action(
+        callback.bot,
+        callback.message,
+        "принята сводка merger",
+        role="organizer",
+        event_number=event.get("event_number"),
+    )
+
+
+async def merger_dismiss_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = callback.data or ""
+    if not data.startswith("merger:dismiss:"):
+        return
+    event_code = data.removeprefix("merger:dismiss:")
+    event = EVENTS.get(event_code)
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    pending = str(event.get("merger_pending_update_text") or "").strip()
+    if pending:
+        brief_merger.mark_merger_notified(event, pending)
+    event["merger_pending_dismissed_at"] = now_ts()
+    touch_event(event)
+    save_events()
+    await callback.message.answer(
+        "Ок. Сводку можно принять позже из «📂 Мои поездки» — открой поездку и посмотри блок расхождений.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
 async def participant_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     async with ui_feedback.thinking(callback.message):
@@ -3999,6 +4128,8 @@ async def main() -> None:
     dp.callback_query.register(help_link_callback_handler, F.data == "help:link")
     dp.callback_query.register(help_my_events_callback_handler, F.data == "help:myevents")
     dp.callback_query.register(help_report_callback_handler, F.data == "help:report")
+    dp.callback_query.register(merger_accept_callback_handler, F.data.startswith("merger:accept:"))
+    dp.callback_query.register(merger_dismiss_callback_handler, F.data.startswith("merger:dismiss:"))
     dp.callback_query.register(participant_confirm_callback_handler, F.data == "participant:confirm")
     dp.callback_query.register(participant_edit_callback_handler, F.data == "participant:edit")
     dp.callback_query.register(voc_rate_callback_handler, F.data.startswith("voc:rate:"))

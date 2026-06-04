@@ -116,16 +116,20 @@ def parse_participant_message(message_text: str, participant_name: str) -> Dict[
 
 def merge_brief_inputs(
     *,
-    base_brief_json: Dict[str, Any],
+    flat_brief_json: Dict[str, Any],
+    organizer_structured_history: List[Dict[str, Any]],
+    organizer_structured_latest: Dict[str, Any],
     participant_inputs_json: List[Dict[str, Any]],
-    new_input_json: Dict[str, Any],
+    new_participant_input_json: Dict[str, Any],
     current_event_status: str,
 ) -> Dict[str, Any]:
     merger_prompt = get_merger_prompt()
     context_payload = {
-        "base_brief_json": base_brief_json or {},
+        "flat_brief_json": flat_brief_json or {},
+        "organizer_structured_history": organizer_structured_history or [],
+        "organizer_structured_latest": organizer_structured_latest or {},
         "participant_inputs_json": participant_inputs_json or [],
-        "new_input_json": new_input_json or {},
+        "new_participant_input_json": new_participant_input_json or {},
         "current_event_status": current_event_status or "created",
     }
     user_prompt = json.dumps(context_payload, ensure_ascii=False)

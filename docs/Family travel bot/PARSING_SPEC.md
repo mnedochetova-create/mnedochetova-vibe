@@ -145,9 +145,14 @@
 | Participant parser | `brief_parser_participant_system_prompt.md` | Вклад участника |
 | Merger | `brief_merger_system_prompt.md` | **Только** после вклада участника |
 
-Merger не парсит свободный текст. Типы расхождений: `preference_difference`, `hard_conflict`, `harmless_addition`, `unclear`. В чате организатору — блок `group_conflicts` в карточке брифа.
+Merger **не парсит** свободный текст и **не обновляет** плоский `event.brief` (карточка собирается кодом: organizer merge + `merge_participant_into_brief`).  
+Вход merger: `flat_brief_json` + `organizer_structured_history` + `participant_inputs_json` + `new_participant_input_json`.  
+Выход в продукт: `group_conflicts`, `group_open_questions`, опционально `organizer_update_text` → уведомление организатору с кнопкой **«Принять сводку»** (текст в `organizer_accepted_group_summary`, без автозаписи полей брифа).  
+`merged_brief` в ответе LLM — только аудит (`merger_result_structured`), не применяется к чату.
 
-Доп. поля события (аудит, подбор): `base_brief_structured`, `participant_inputs_structured`, `merged_brief_structured`.
+Типы расхождений: `preference_difference`, `hard_conflict`, `harmless_addition`, `unclear`.
+
+Доп. поля события (аудит): `organizer_structured_history`, `base_brief_structured` (последний), `participant_inputs_structured`, `merger_result_structured`, `merger_pending_update_text`, `organizer_accepted_group_summary`.
 
 ## 7) Задел под подбор поездок (следующий этап)
 
