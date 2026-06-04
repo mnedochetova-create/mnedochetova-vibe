@@ -18,6 +18,7 @@
 | [MENU_ARCHITECTURE.md](MENU_ARCHITECTURE.md) | Нижнее меню, burger, inline по состояниям |
 | [BRIEF_SHARING_UX_COPY.md](BRIEF_SHARING_UX_COPY.md) | Финал брифа и sharing (согласовано) |
 | [BOT_PERSONA.md](BOT_PERSONA.md) | Женский род бота, обращение на «ты» |
+| [TELEGRAM_BOT_DISCOVERY.md](TELEGRAM_BOT_DISCOVERY.md) | Тексты для BotFather: поиск по travel / путешествия |
 
 ## Разработка
 
