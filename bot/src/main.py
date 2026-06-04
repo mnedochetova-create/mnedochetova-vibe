@@ -205,7 +205,7 @@ async def ensure_organizer_name_on_event(
         chat_id = event.get("organizer_chat_id")
         if chat_id:
             try:
-                chat = await bot.get_chat(chat_id)
+                chat = await asyncio.wait_for(bot.get_chat(chat_id), timeout=5.0)
                 name = organizer_display_name_from_user(chat)
             except Exception:
                 logging.debug("get_chat for organizer_name failed", exc_info=True)
@@ -2062,13 +2062,6 @@ async def help_handler(message: Message, state: Optional[FSMContext] = None) -> 
             "• Активная поездка пока не найдена."
         )
 
-    if state is not None and snap.get("role") == "organizer" and snap.get("has_event"):
-        _code, event = await _organizer_event_from_state(state, chat_id=message.chat.id)
-        if event and event.get("invite_link"):
-            brief = brief_parser.restore_organizer_brief_from_event(event)
-            if not missing_brief_fields(brief):
-                await show_organizer_invite_step(message, state)
-
     await message.answer(
         f"{BOT_CAPABILITIES_HELP_BLOCK}\n\n"
         "🆘 <b>Помощь</b>\n"
@@ -2850,9 +2843,11 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
             reply_markup=help_keyboard(),
         )
         return
-    if not await show_organizer_invite_step(
-        callback.message, state, from_user=callback.from_user
-    ):
+    async with ui_feedback.thinking(callback.message):
+        ok = await show_organizer_invite_step(
+            callback.message, state, from_user=callback.from_user
+        )
+    if not ok:
         await callback.message.answer(
             "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
             reply_markup=help_keyboard(),

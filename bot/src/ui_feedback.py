@@ -12,7 +12,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import LinkPreviewOptions, Message
 
 # Меняется при каждом деплое — можно проверить в /help, что бот обновился.
-BOT_UI_VERSION = os.getenv("BOT_UI_VERSION", "2026-05-28-invite-share-fix")
+BOT_UI_VERSION = os.getenv("BOT_UI_VERSION", "2026-05-28-help-fast")
 
 # Текстовый статус как у Mira («Думаю»), без медиа. Отключить: THINKING_STATUS=0
 THINKING_STATUS_ENABLED = os.getenv("THINKING_STATUS", "1").strip().lower() not in {
