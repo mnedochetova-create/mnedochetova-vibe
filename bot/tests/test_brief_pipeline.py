@@ -23,6 +23,36 @@ def test_upsert_participant_input_replaces_same_name() -> None:
     assert maria == new_row
 
 
+def test_transport_context_from_brief_multimodal() -> None:
+    brief = {
+        "trip_transport": "ground",
+        "ground_transport_notes": ["на машине", "паром на остров"],
+        "activity_preferences": ["пешком по Городцу", "пляж"],
+        "flight_hours_max": None,
+    }
+    ctx = brief_pipeline.transport_context_from_brief(brief)
+    assert ctx.get("trip_transport") == "ground"
+    assert "на машине" in str(ctx.get("ground_transport_notes"))
+    assert "пешком" in str(ctx.get("activity_preferences_transport"))
+
+
+def test_build_organizer_user_prompt_includes_multimodal_hint() -> None:
+    prompt = brief_pipeline.build_organizer_user_prompt(
+        "Летим в Италию, дальше паром",
+        brief_context={"ground_transport_notes": ["паром"]},
+    )
+    assert "мультимодальность" in prompt.lower() or "мультимодаль" in prompt.lower()
+    assert "паром" in prompt
+    assert "Летим в Италию" in prompt
+
+
+def test_build_merger_user_prompt_wraps_payload() -> None:
+    payload = {"flat_brief_json": {"trip_transport": "ground"}}
+    prompt = brief_pipeline.build_merger_user_prompt(payload)
+    assert "transport_mode_difference" in prompt
+    assert "ground" in prompt
+
+
 def test_role_llm_requires_api_key(monkeypatch) -> None:
     monkeypatch.setenv("PARSER_MODE", "role_llm")
     monkeypatch.delenv("USE_STRUCTURED_BRIEF_PIPELINE", raising=False)

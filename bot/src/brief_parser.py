@@ -1081,6 +1081,7 @@ def parse_message_to_brief(
     *,
     role: str = "organizer",
     participant_name: str = "",
+    brief_context: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Парсинг одного сообщения: rules → (опц.) LLM по режиму PARSER_MODE.
@@ -1095,10 +1096,14 @@ def parse_message_to_brief(
 
     if role_llm_active():
         if role == "participant":
-            structured = brief_pipeline.parse_participant_message(text, participant_name)
+            structured = brief_pipeline.parse_participant_message(
+                text, participant_name, brief_context=brief_context
+            )
             llm_flat = brief_flat_mapper.participant_structured_to_flat(structured)
         else:
-            structured = brief_pipeline.parse_organizer_message(text)
+            structured = brief_pipeline.parse_organizer_message(
+                text, brief_context=brief_context
+            )
             llm_flat = brief_flat_mapper.organizer_structured_to_flat(structured)
         if llm_flat:
             LAST_PARSER_MODE = "role_llm+rules"

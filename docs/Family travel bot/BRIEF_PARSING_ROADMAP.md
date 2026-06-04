@@ -65,7 +65,17 @@ Live LLM (`USE_LLM_LIVE_RESPONSES`) — conversation / mixed / corner / voc_feed
 
 ### Фаза D — Подбор
 
-- [ ] `RECOMMENDATION_BRIEF_SCHEMA.md` или § в `PARSING_SPEC`.
+- [x] `RECOMMENDATION_BRIEF_SCHEMA.md`, `TRIP_FROM_BRIEF_SPEC.md`, `TRIP_PROPOSAL_USER_FLOW.md`.
+- [x] `TRIP_EXPERIENCE_ARCHITECTURE.md`, `TRIP_ROUTE_COMPOSITION.md`, `TRIP_DATA_SOURCES.md` — целевая модель (LLM+cards, маршрут, данные).
+- [x] `trip_from_brief.py` — снимок, readiness (**временные** rules-черновики, не целевой продукт).
+- [x] Интеграция в `main.py` за `TRIP_PROPOSALS_ENABLED` (по умолчанию выкл.).
+- [ ] `TRIP_TRANSPORT_MODEL`: `modes_present`, readiness по режимам (не один `missing_transport`).
+- [ ] Парсер: извлекать train/ferry/boat/walk из текста (`transport_modes_declared`).
+- [x] Промпты: мультимодальность в organizer/participant/merger/live/corner/trip_proposal — см. `bot/prompts/README.md`.
+- [ ] `content_brief` + LLM Planner/Narrator + HTML card renderer.
+- [ ] `route_plan` / `narrative_blocks` на event.
+- [ ] Retrieval: Nominatim/Wikidata → OSRM/Open-Meteo (`TRIP_EXTERNAL_FACTS_ENABLED`).
+- [ ] Short-list UI; Travelpayouts **после** short-list only.
 
 ## Код (точки входа)
 
@@ -79,7 +89,8 @@ Live LLM (`USE_LLM_LIVE_RESPONSES`) — conversation / mixed / corner / voc_feed
 | `brief_visibility.py` | скрытие полей в карточке |
 | `corner_guidance.py` | corner LLM |
 | `voice_input.py` | Whisper |
-| `main.py` | handlers, `format_brief_unified`, FSM, callbacks `merger:accept` |
+| `main.py` | handlers, `format_brief_unified`, FSM, callbacks `merger:accept`, `trip:show_draft` |
+| `trip_from_brief.py` | recommendation-ready, readiness, draft proposals |
 
 Промпты: индекс [`bot/prompts/README.md`](../../bot/prompts/README.md).
 

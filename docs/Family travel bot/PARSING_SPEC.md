@@ -66,8 +66,11 @@
 - `stay_experience` (`object`) — сценарий отдыха: `setting`, `accommodation_style`, `trip_style`, `season_note` (собирается из текста, направления и дат; см. `brief_stay_enrich.py`).
 - `climate` (`string`) — legacy, дублируется из `stay_experience` для совместимости.
 - `trip_type` (`string`) — legacy, формат отдыха.
-- `activity_preferences` (`string[]`) — доп. пожелания.
+- `activity_preferences` (`string[]`) — доп. пожелания (в т.ч. **способы передвижения**: пешком, лодка, поезд — не сводить к перелёту).
 - `constraints_notes` (`string[]`) — ограничения/важные рамки.
+- `trip_transport` (`flight` \| `ground`) — legacy для карточки брифа; post-brief использует **`modes_present`** — см. [`TRIP_TRANSPORT_MODEL.md`](TRIP_TRANSPORT_MODEL.md).
+- `ground_transport_notes` (`string[]`) — наземные и прочие режимы (авто, ЖД, паром, лодка…).
+- `drive_hours_max`, `flight_not_needed` — сигналы для `car` / отказа от авиа.
 - `party_preferences` (`object`) — пожелания по ролям/участникам.
 
 ## 2) Правила: извлекаем / не извлекаем / когда уточняем
@@ -155,6 +158,18 @@ Merger **не парсит** свободный текст и **не обнов�
 
 Доп. поля события (аудит): `organizer_structured_history`, `base_brief_structured` (последний), `participant_inputs_structured`, `merger_result_structured`, `merger_pending_update_text`, `organizer_accepted_group_summary`.
 
-## 7) Задел под подбор поездок (следующий этап)
+## 7) Подбор поездок (фаза D)
 
-Поверх плоского `brief` планируется слой recommendation-ready: нормализованное направление, hard vs soft constraints, provenance/confidence, типы конфликтов из merger. `context_raw` сохранять всегда. Детали — в roadmap фаза D (`BRIEF_PARSING_ROADMAP.md`).
+**Контракт:** жёстко фиксируется только согласованный `brief`. Дальше — **`recommendation_ready` + `content_brief` → LLM → HTML-карточки** (сценарии, `route_plan`, нарратив). Rules-черновики в коде — временная заглушка.
+
+| Документ | Назначение |
+|----------|------------|
+| [`TRIP_EXPERIENCE_ARCHITECTURE.md`](TRIP_EXPERIENCE_ARCHITECTURE.md) | бриф vs LLM, воронка без быстрой брони, типы карточек |
+| [`TRIP_TRANSPORT_MODEL.md`](TRIP_TRANSPORT_MODEL.md) | мультимодальный транспорт в брифе и readiness |
+| [`TRIP_ROUTE_COMPOSITION.md`](TRIP_ROUTE_COMPOSITION.md) | сегменты, комбо EU, impression РФ, авто |
+| [`TRIP_DATA_SOURCES.md`](TRIP_DATA_SOURCES.md) | открытые API + Travelpayouts после short-list |
+| [`RECOMMENDATION_BRIEF_SCHEMA.md`](RECOMMENDATION_BRIEF_SCHEMA.md) | снимок, `route_plan`, readiness по archetype |
+| [`TRIP_FROM_BRIEF_SPEC.md`](TRIP_FROM_BRIEF_SPEC.md) | lifecycle, флаги |
+| `bot/src/trip_from_brief.py` | снимок + readiness (v0) |
+
+Парсинг должен выносить **локации** в `regions` / `must_visit` для impression-маршрутов. `organizer_dump` — provenance, в LLM через `content_brief`.

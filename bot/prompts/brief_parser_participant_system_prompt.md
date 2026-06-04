@@ -94,7 +94,7 @@ personal_preferences.stay_experience.value — объект:
 ## Нормализация
 
 - "250к" -> 250000; "1 млн" -> 1000000
-- "до 5 часов" / "перелёт до 5 часов" -> flight_hours_max.value = 5
+- "до 5 часов" / "перелёт до 5 часов" (явно про авиа) -> flight_hours_max.value = 5
 - "без пересадок" -> transfers_allowed.value = false
 - "пересадки допустимы" -> transfers_allowed.value = true
 - "нет ограничений по перелёту" -> flight_hours_unrestricted.value = true
@@ -106,12 +106,26 @@ personal_preferences.stay_experience.value — объект:
 - "без виз" -> visa_required.value = false
 - Загранпаспорт **не** означает автоматически «виза не нужна».
 
+## Передвижение (мультимодально, личный вклад)
+
+Участник может указать **любой** способ: перелёт, машина, поезд, паром, лодка, пешком, автобус. Не подменяй всё перелётом.
+
+| Сигнал | Куда (личное) |
+|--------|----------------|
+| лимит перелёта, пересадки, класс рейса | flight_hours_max, transfers_allowed, flight_preferences |
+| машина, авто, не лечу | ground_transport_notes / constraints_notes; не flight_hours_max |
+| поезд, паром, лодка, пешком | activity_preferences и/или constraints_notes |
+| «до N часов в самолёте» | flight_hours_max |
+| «до N часов в дороге» без авиа | constraints_notes, не flight |
+
+Несколько режимов в одном сообщении — сохрани все. Справочник: `TRIP_TRANSPORT_MODEL.md`.
+
 ## Поездка по России / наземный маршрут (личные пожелания)
 
-Если участник про поездку по РФ, «на авто», «без перелётов», области/города:
+Если участник про поездку по РФ, «на авто», «без перелётов», области/города, пешие прогулки:
 
-- В stay_experience.setting — регионы/города; trip_style может включать «автомобиль».
-- must_visit_places / regions — в activity_preferences или additional_wishes, если явно названы точки.
+- stay_experience.setting — регионы/города; trip_style — автомобиль при необходимости.
+- Точки маршрута — в activity_preferences / additional_wishes.
 - «до N часов» без перелёта — время в пути, не класс рейса.
 - Не требуй визу/международный перелёт для внутренней поездки.
 

@@ -47,6 +47,7 @@ from interaction_log import flush_session_milestone, log_parse_result, log_sessi
 from storage import load_events_from_file, save_events_to_file
 import brief_display
 import brief_route_combo
+import trip_from_brief
 import ui_feedback
 
 
@@ -967,9 +968,13 @@ def parse_message_to_brief(
     *,
     role: str = "organizer",
     participant_name: str = "",
+    brief_context: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     return brief_parser.parse_message_to_brief(
-        text, role=role, participant_name=participant_name
+        text,
+        role=role,
+        participant_name=participant_name,
+        brief_context=brief_context,
     )
 
 
@@ -1282,7 +1287,9 @@ async def _apply_organizer_brief_from_message(
     event = EVENTS.get(event_code, {}) if event_code else {}
     has_prior_dump = isinstance(event.get("organizer_dump"), str) and bool(event.get("organizer_dump", "").strip())
 
-    incoming, structured = parse_message_to_brief(text, role="organizer")
+    incoming, structured = parse_message_to_brief(
+        text, role="organizer", brief_context=existing_brief
+    )
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
     brief = brief_parser.merge_organizer_incoming(
         existing_brief,
@@ -1536,7 +1543,9 @@ async def handle_organizer_conversation(
     history = await save_dialog_turn(state, user_text=text)
     event_code, brief = await resolve_organizer_event_and_brief(message, state)
 
-    incoming, structured = parse_message_to_brief(text, role="organizer")
+    incoming, structured = parse_message_to_brief(
+        text, role="organizer", brief_context=brief
+    )
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
     merger_conflicts: List[str] = list((brief or {}).get("group_conflicts") or [])
     change_info = {"added_fields": [], "updated_fields": []}
@@ -1775,6 +1784,7 @@ async def handle_participant_brief_input(
         message.text or "",
         role="participant",
         participant_name=participant_name,
+        brief_context=base_brief,
     )
     updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
     change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
@@ -1860,7 +1870,10 @@ async def handle_participant_conversation(message: Message, state: FSMContext) -
     )
 
     incoming, structured = parse_message_to_brief(
-        text, role="participant", participant_name=participant_name
+        text,
+        role="participant",
+        participant_name=participant_name,
+        brief_context=base_brief,
     )
     brief_updated = message_intent.has_substantive_parsed_fields(incoming)
     updated_brief = base_brief
@@ -2303,13 +2316,40 @@ def brief_ready_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def brief_confirmed_keyboard() -> InlineKeyboardMarkup:
+def trip_proposals_enabled() -> bool:
+    return env_util.env_flag("TRIP_PROPOSALS_ENABLED")
+
+
+def brief_confirmed_keyboard(event_code: Optional[str] = None) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="📤 Поделиться брифом", callback_data="brief:share")],
+        [InlineKeyboardButton(text="📋 Текст для пересылки", callback_data="brief:share_text")],
+        [InlineKeyboardButton(text="📌 Посмотреть бриф", callback_data="event:show_brief")],
+        [InlineKeyboardButton(text="✨ Новая поездка", callback_data="event:create")],
+    ]
+    if trip_proposals_enabled() and event_code:
+        rows.insert(
+            0,
+            [
+                InlineKeyboardButton(
+                    text="🧭 Показать варианты поездки",
+                    callback_data=f"trip:show_draft:{event_code}",
+                )
+            ],
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def trip_refresh_keyboard(event_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📤 Поделиться брифом", callback_data="brief:share")],
-            [InlineKeyboardButton(text="📋 Текст для пересылки", callback_data="brief:share_text")],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить варианты",
+                    callback_data=f"trip:refresh:{event_code}",
+                )
+            ],
             [InlineKeyboardButton(text="📌 Посмотреть бриф", callback_data="event:show_brief")],
-            [InlineKeyboardButton(text="✨ Новая поездка", callback_data="event:create")],
         ]
     )
 
@@ -3310,12 +3350,15 @@ async def notify_organizer_brief_ready(bot: Bot, event_code: str) -> None:
 
 async def brief_confirm_prep_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
+    event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event:
         await callback.message.answer("Сначала создай поездку и собери базовый бриф.")
         return
     if event.get("organizer_brief_confirmed_at"):
-        await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+        await callback.message.answer(
+            BRIEF_CONFIRMED_TEXT,
+            reply_markup=brief_confirmed_keyboard(event_code),
+        )
         return
     if not can_offer_brief_confirm(event):
         await callback.message.answer(
@@ -3338,7 +3381,10 @@ async def _brief_confirm_callback_impl(callback: CallbackQuery, state: FSMContex
         await callback.message.answer("Поездка не найдена.")
         return
     if event.get("organizer_brief_confirmed_at"):
-        await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+        await callback.message.answer(
+            BRIEF_CONFIRMED_TEXT,
+            reply_markup=brief_confirmed_keyboard(event_code),
+        )
         return
     if not can_offer_brief_confirm(event):
         await callback.message.answer(
@@ -3349,9 +3395,20 @@ async def _brief_confirm_callback_impl(callback: CallbackQuery, state: FSMContex
     ts = now_ts()
     event["organizer_brief_confirmed_at"] = ts
     event["completed_at"] = event.get("completed_at") or ts
+    if trip_proposals_enabled():
+        trip_from_brief.prepare_trip_proposals_for_event(event)
     touch_event(event)
     save_events()
-    await callback.message.answer(BRIEF_CONFIRMED_TEXT, reply_markup=brief_confirmed_keyboard())
+    await callback.message.answer(
+        BRIEF_CONFIRMED_TEXT,
+        reply_markup=brief_confirmed_keyboard(event_code),
+    )
+    if trip_proposals_enabled():
+        readiness = trip_from_brief.assess_trip_readiness(event)
+        if not readiness.get("ready"):
+            await callback.message.answer(
+                trip_from_brief.format_blockers_message(readiness),
+            )
     await log_session_action(
         callback.bot,
         callback.message,
@@ -3360,6 +3417,74 @@ async def _brief_confirm_callback_impl(callback: CallbackQuery, state: FSMContex
         event_number=event.get("event_number"),
     )
     await flush_session_milestone(callback.bot, callback.message, "organizer_brief_confirmed")
+
+
+async def _send_trip_proposals_message(
+    message: Message,
+    event_code: str,
+    event: Dict[str, Any],
+) -> None:
+    if not trip_proposals_enabled():
+        return
+    if not event.get("organizer_brief_confirmed_at"):
+        await message.answer("Сначала подтверди бриф поездки.")
+        return
+    readiness = trip_from_brief.prepare_trip_proposals_for_event(event)
+    touch_event(event)
+    save_events()
+    if not readiness.get("ready"):
+        await message.answer(trip_from_brief.format_blockers_message(readiness))
+        return
+    proposals = event.get("trip_proposals") or []
+    event["trip_proposals_status"] = "ready"
+    touch_event(event)
+    save_events()
+    text = trip_from_brief.format_proposals_html(
+        proposals, warnings=readiness.get("warnings")
+    )
+    await message.answer(text, reply_markup=trip_refresh_keyboard(event_code))
+
+
+async def trip_show_draft_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if not trip_proposals_enabled():
+        await callback.message.answer("Варианты поездки пока недоступны.")
+        return
+    data = callback.data or ""
+    if not data.startswith("trip:show_draft:"):
+        return
+    event_code = data.removeprefix("trip:show_draft:")
+    event = EVENTS.get(event_code)
+    if not event:
+        event_code, event = await _organizer_event_from_state(
+            state, chat_id=callback.message.chat.id
+        )
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    async with ui_feedback.thinking(callback.message):
+        await _send_trip_proposals_message(callback.message, event_code, event)
+
+
+async def trip_refresh_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if not trip_proposals_enabled():
+        await callback.message.answer("Варианты поездки пока недоступны.")
+        return
+    data = callback.data or ""
+    if not data.startswith("trip:refresh:"):
+        return
+    event_code = data.removeprefix("trip:refresh:")
+    event = EVENTS.get(event_code)
+    if not event:
+        event_code, event = await _organizer_event_from_state(
+            state, chat_id=callback.message.chat.id
+        )
+    if not event:
+        await callback.message.answer("Поездка не найдена.")
+        return
+    async with ui_feedback.thinking(callback.message):
+        await _send_trip_proposals_message(callback.message, event_code, event)
 
 
 async def brief_edit_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -4116,6 +4241,8 @@ async def main() -> None:
     dp.callback_query.register(brief_share_callback_handler, F.data == "brief:share")
     dp.callback_query.register(brief_share_text_callback_handler, F.data == "brief:share_text")
     dp.callback_query.register(brief_share_done_callback_handler, F.data == "brief:share_done")
+    dp.callback_query.register(trip_show_draft_callback_handler, F.data.startswith("trip:show_draft:"))
+    dp.callback_query.register(trip_refresh_callback_handler, F.data.startswith("trip:refresh:"))
     dp.callback_query.register(event_how_callback_handler, F.data == "event:how")
     dp.callback_query.register(event_invite_link_callback_handler, F.data == "event:invite_link")
     dp.callback_query.register(event_invite_share_callback_handler, F.data == "event:invite_share")
