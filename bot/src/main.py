@@ -1351,9 +1351,10 @@ async def handle_organizer_mixed(
     )
     intro = await answer_live_text(message, intro_context, MIXED_FALLBACK_ORGANIZER)
 
-    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
-        message, state, flow_step=flow_step
-    )
+    async with ui_feedback.thinking(message):
+        brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+            message, state, flow_step=flow_step
+        )
     brief_parts, is_complete = build_organizer_brief_reply_parts(
         brief,
         flow_step=flow_step,

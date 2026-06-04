@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV BOT_UI_VERSION=2026-05-28-invite-share-512
+ENV BOT_UI_VERSION=2026-05-28-thinking-status
 
 WORKDIR /app
 
