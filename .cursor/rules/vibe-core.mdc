@@ -10,7 +10,8 @@ alwaysApply: true
 ## Структура
 
 - `bot/` — код бота (стек на этапе старта: Node.js + Telegraf или Python + aiogram; см. `bot/README.md`).
-- `docs/` — PRD/SPEC, гипотезы, исследования; отдельные папки продуктов, например `docs/Family travel bot/`, `docs/B2B bot agencies/`.
+- `docs/` — PRD/SPEC, гипотезы, исследования; сквозное видение платформы — `docs/MyTravel.Lab/`; срезы: `docs/Family travel bot/`, `docs/B2B bot agencies/`.
+- `.cursor/skills/` — project skills (контент, исследования рынка и др.).
 - `VERSION`, `CHANGELOG.md` — версия; релизы согласованы с GitHub (теги / Release Please).
 
 ## Приоритеты работы

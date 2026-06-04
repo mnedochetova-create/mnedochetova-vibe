@@ -6,9 +6,11 @@
 
 - `bot/` — код и техническая часть разработки
 - `docs/` — продуктовая документация, требования и спецификация
+- `docs/MyTravel.Lab/` — **видение платформы** (журнал, B2C, B2B, design system, skills)
 - `docs/B2B bot agencies/` — PRD/SPEC B2B‑бота для агентств и отелей
-- `docs/Family travel bot/` — PRD/SPEC семейного travel‑бота‑ассистента
-- `docs/agents/` — полезные агент-профили для исследования и стратегии
+- `docs/Family travel bot/` — PRD/SPEC семейного travel‑бота‑ассистента (текущий MVP в `bot/`)
+- `docs/agents/` — указатели на Cursor skills
+- `.cursor/skills/` — project skills (маркетинг, тренды, …)
 - `.cursor/rules/` — правила Cursor для этого репозитория (доки, бот, git, UX)
 
 ## Быстрый старт
