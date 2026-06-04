@@ -16,7 +16,7 @@ from aiogram.fsm.storage.base import StorageKey
 
 
 def test_organizer_event_from_state_falls_back_to_chat_id(monkeypatch) -> None:
-    monkeypatch.setattr(main, "load_events", lambda: None)
+    monkeypatch.setattr(main, "load_events", lambda *, merge=False: None)
     main.EVENTS.clear()
     main.EVENTS["trip99"] = {
         "code": "trip99",
