@@ -57,3 +57,8 @@ def test_resolve_prefers_fsm_new_trip_over_old() -> None:
     }
     code = main.resolve_organizer_event_code(chat_id, "trip_new")
     assert code == "trip_new"
+
+
+def test_create_event_text_normalized() -> None:
+    assert main.is_create_event_text("✨ Новая поездка")
+    assert main.is_create_event_text("новая поездка")

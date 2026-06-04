@@ -707,6 +707,14 @@ async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
 
 
 async def handle_menu_shortcuts(message: Message, state: Optional[FSMContext] = None) -> bool:
+    if state is None:
+        return False
+    if is_create_event_text(message.text or ""):
+        await new_event_handler(message, state)
+        return True
+    if is_current_trip_text(message.text or ""):
+        await current_trip_handler(message, state)
+        return True
     if is_my_events_text(message.text or ""):
         await my_events_handler(message, state)
         return True
@@ -2863,13 +2871,14 @@ async def main() -> None:
     dp.message.register(start_payload_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
     dp.message.register(cancel_handler, Command("cancel"))
+    # Меню — до state-хендлеров, иначе «Новая поездка» уходит в organizer_clarify и показывает старый бриф.
+    dp.message.register(new_event_handler, F.text.func(is_create_event_text))
+    dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
+    dp.message.register(my_events_handler, F.text.func(is_my_events_text))
+    dp.message.register(help_handler, F.text.func(is_help_text))
     dp.message.register(participant_contribute_handler, FlowState.participant_contribute, F.text)
     dp.message.register(organizer_dump_handler, FlowState.organizer_dump, F.text)
     dp.message.register(organizer_clarify_handler, FlowState.organizer_clarify, F.text)
-    dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
-    dp.message.register(new_event_handler, F.text.func(is_create_event_text))
-    dp.message.register(my_events_handler, F.text.func(is_my_events_text))
-    dp.message.register(help_handler, F.text.func(is_help_text))
     dp.message.register(text_fallback_handler, F.text)
 
     dp.callback_query.register(role_callback_handler, F.data.startswith("role:"))
