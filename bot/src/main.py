@@ -3188,7 +3188,6 @@ async def main() -> None:
             me = await asyncio.wait_for(bot.get_me(), timeout=8)
             BOT_USERNAME = me.username
             logging.info("Bot profile loaded: @%s", BOT_USERNAME)
-            await ui_feedback.cache_bot_logo_file_id(bot)
             break
         except Exception as err:
             if attempt >= me_attempts:
