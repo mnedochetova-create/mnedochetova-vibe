@@ -1083,8 +1083,8 @@ async def answer_live_text(
     context: Dict[str, Any],
     fallback_text: str,
 ) -> str:
-    async with ui_feedback.thinking(message):
-        return live_text_or_fallback(context, fallback_text)
+    """LLM-ответ; индикатор «Думаю» — снаружи (route_* / handlers)."""
+    return live_text_or_fallback(context, fallback_text)
 
 
 STATIC_CLARIFY_HEADER_DUMP = "🚨 <b>Уточните только это</b> (можно одним сообщением):"
@@ -1204,10 +1204,9 @@ async def handle_organizer_brief_input(
 ) -> None:
     text = message.text or ""
     await save_dialog_turn(state, user_text=text)
-    async with ui_feedback.thinking(message):
-        brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
-            message, state, flow_step=flow_step
-        )
+    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+        message, state, flow_step=flow_step
+    )
     parts, is_complete = build_organizer_brief_reply_parts(
         brief,
         flow_step=flow_step,
@@ -1366,10 +1365,9 @@ async def handle_organizer_mixed(
     )
     intro = await answer_live_text(message, intro_context, MIXED_FALLBACK_ORGANIZER)
 
-    async with ui_feedback.thinking(message):
-        brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
-            message, state, flow_step=flow_step
-        )
+    brief, missing, event_number, _event_code = await _apply_organizer_brief_from_message(
+        message, state, flow_step=flow_step
+    )
     brief_parts, is_complete = build_organizer_brief_reply_parts(
         brief,
         flow_step=flow_step,
@@ -1405,12 +1403,13 @@ async def route_organizer_text_message(
         elif intent == "mixed":
             pass
     logging.info("Organizer message intent=%s flow_step=%s", intent, flow_step)
-    if intent == "brief_input":
-        await handle_organizer_brief_input(message, state, flow_step=flow_step)
-    elif intent == "mixed":
-        await handle_organizer_mixed(message, state, flow_step=flow_step)
-    else:
-        await handle_organizer_conversation(message, state, flow_step=flow_step)
+    async with ui_feedback.thinking(message):
+        if intent == "brief_input":
+            await handle_organizer_brief_input(message, state, flow_step=flow_step)
+        elif intent == "mixed":
+            await handle_organizer_mixed(message, state, flow_step=flow_step)
+        else:
+            await handle_organizer_conversation(message, state, flow_step=flow_step)
 
 
 async def handle_participant_brief_input(
@@ -1434,39 +1433,38 @@ async def handle_participant_brief_input(
     participant_name = data.get("participant_name") or (
         message.from_user.full_name if message.from_user else str(message.chat.id)
     )
-    async with ui_feedback.thinking(message):
-        incoming, structured = parse_message_to_brief(
-            message.text or "",
-            role="participant",
-            participant_name=participant_name,
+    incoming, structured = parse_message_to_brief(
+        message.text or "",
+        role="participant",
+        participant_name=participant_name,
+    )
+    updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
+    change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
+    merger_conflicts: List[str] = list(base_brief.get("group_conflicts") or [])
+    if structured:
+        participant_inputs = event.get("participant_inputs_structured") or []
+        event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
+            participant_inputs,
+            structured,
         )
-        updated_brief = merge_participant_into_brief(base_brief, incoming, participant_name)
-        change_info = live_response.detect_field_changes(base_brief, incoming, updated_brief)
-        merger_conflicts: List[str] = list(base_brief.get("group_conflicts") or [])
-        if structured:
-            participant_inputs = event.get("participant_inputs_structured") or []
-            event["participant_inputs_structured"] = brief_pipeline.upsert_participant_input(
-                participant_inputs,
-                structured,
-            )
-            merger_conflicts = run_group_merger_for_event(event)
-            if merger_conflicts:
-                updated_brief["group_conflicts"] = merger_conflicts
-        event["brief"] = updated_brief
+        merger_conflicts = run_group_merger_for_event(event)
+        if merger_conflicts:
+            updated_brief["group_conflicts"] = merger_conflicts
+    event["brief"] = updated_brief
 
-        updates = event.setdefault("participant_updates", {})
-        updates[chat_key(message.chat.id)] = {
-            "text": message.text or "",
-            "confirmed": False,
-            "name": participant_name,
-            "username": (message.from_user.username if message.from_user else None),
-            "updated_at": now_ts(),
-        }
-        participants = event.setdefault("participants", {})
-        if str(message.chat.id) in participants:
-            participants[str(message.chat.id)]["updated_at"] = now_ts()
-        touch_event(event)
-        save_events()
+    updates = event.setdefault("participant_updates", {})
+    updates[chat_key(message.chat.id)] = {
+        "text": message.text or "",
+        "confirmed": False,
+        "name": participant_name,
+        "username": (message.from_user.username if message.from_user else None),
+        "updated_at": now_ts(),
+    }
+    participants = event.setdefault("participants", {})
+    if str(message.chat.id) in participants:
+        participants[str(message.chat.id)]["updated_at"] = now_ts()
+    touch_event(event)
+    save_events()
 
     await state.set_state(FlowState.participant_confirm)
     missing = missing_brief_fields(updated_brief)
@@ -1616,12 +1614,13 @@ async def route_participant_text_message(message: Message, state: FSMContext) ->
         flow_step="participant_contribute",
     )
     logging.info("Participant message intent=%s", intent)
-    if intent == "brief_input":
-        await handle_participant_brief_input(message, state)
-    elif intent == "mixed":
-        await handle_participant_mixed(message, state)
-    else:
-        await handle_participant_conversation(message, state)
+    async with ui_feedback.thinking(message):
+        if intent == "brief_input":
+            await handle_participant_brief_input(message, state)
+        elif intent == "mixed":
+            await handle_participant_mixed(message, state)
+        else:
+            await handle_participant_conversation(message, state)
 
 
 def format_brief_unified(
@@ -2155,6 +2154,12 @@ def _action_priority(action_short: str) -> int:
 
 
 async def my_events_handler(message: Message, state: Optional[FSMContext]) -> None:
+    load_events(merge=True)
+    async with ui_feedback.thinking(message):
+        await _my_events_handler_impl(message, state)
+
+
+async def _my_events_handler_impl(message: Message, state: Optional[FSMContext]) -> None:
     chat_id = message.chat.id
     items: List[Dict[str, Any]] = []
     for code, event in EVENTS.items():
@@ -2189,6 +2194,11 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
 
 async def new_event_handler(message: Message, state: FSMContext) -> None:
     logging.info("New event requested by chat_id=%s", message.chat.id)
+    async with ui_feedback.thinking(message):
+        await _new_event_handler_impl(message, state)
+
+
+async def _new_event_handler_impl(message: Message, state: FSMContext) -> None:
     await state.clear()
     event_code = new_event_code()
     event_number = next_event_number()
@@ -2333,6 +2343,20 @@ async def show_organizer_invite_step(
     from_user: Any = None,
 ) -> bool:
     """Показать актуальный шаг «Поделиться приглашением». Возвращает False, если ссылка недоступна."""
+    async with ui_feedback.thinking(message):
+        return await _show_organizer_invite_step_impl(
+            message, state, event=event, event_code=event_code, from_user=from_user
+        )
+
+
+async def _show_organizer_invite_step_impl(
+    message: Message,
+    state: FSMContext,
+    *,
+    event: Optional[Dict[str, Any]] = None,
+    event_code: Optional[str] = None,
+    from_user: Any = None,
+) -> bool:
     if event is None:
         code = event_code or (await state.get_data()).get("event_code")
         event = EVENTS.get(code) if code else None
@@ -2399,11 +2423,17 @@ async def send_next_step_after_brief(message: Message, state: FSMContext) -> Non
 async def event_create_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     logging.info("Event create clicked chat_id=%s", callback.message.chat.id)
     await callback.answer()
-    await new_event_handler(callback.message, state)
+    await new_event_handler(callback.message, state)  # thinking внутри new_event_handler
 
 
 async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    load_events(merge=True)
+    async with ui_feedback.thinking(callback.message):
+        await _event_open_callback_impl(callback, state)
+
+
+async def _event_open_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     data = callback.data or ""
     event_code = data.removeprefix("event:open:")
     event = EVENTS.get(event_code)
@@ -2536,6 +2566,11 @@ async def brief_confirm_prep_callback_handler(callback: CallbackQuery, state: FS
 
 async def brief_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    async with ui_feedback.thinking(callback.message):
+        await _brief_confirm_callback_impl(callback, state)
+
+
+async def _brief_confirm_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event or not event_code:
         await callback.message.answer("Поездка не найдена.")
@@ -2588,6 +2623,11 @@ async def brief_share_callback_handler(callback: CallbackQuery, state: FSMContex
 
 async def brief_share_text_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    async with ui_feedback.thinking(callback.message):
+        await _brief_share_text_callback_impl(callback, state)
+
+
+async def _brief_share_text_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
     if not event:
         await callback.message.answer("Поездка не найдена.")
@@ -2639,6 +2679,11 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     """Обновить шаг приглашения или выдать кнопку share отдельным сообщением."""
     await callback.answer()
+    async with ui_feedback.thinking(callback.message):
+        await _event_invite_share_callback_impl(callback, state)
+
+
+async def _event_invite_share_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     _event_code, event = await _organizer_event_from_state(
         state, chat_id=callback.message.chat.id
     )
@@ -2693,6 +2738,12 @@ async def event_invite_done_callback_handler(callback: CallbackQuery, state: FSM
 
 async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    load_events(merge=True)
+    async with ui_feedback.thinking(callback.message):
+        await _event_show_brief_callback_impl(callback, state)
+
+
+async def _event_show_brief_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     event_code = data.get("event_code")
     role = data.get("role") or "organizer"
@@ -2726,6 +2777,14 @@ async def event_show_brief_callback_handler(callback: CallbackQuery, state: FSMC
 
 
 async def resume_latest_trip(message: Message, state: FSMContext, *, from_user: Optional[Any] = None) -> None:
+    load_events(merge=True)
+    async with ui_feedback.thinking(message):
+        await _resume_latest_trip_impl(message, state, from_user=from_user)
+
+
+async def _resume_latest_trip_impl(
+    message: Message, state: FSMContext, *, from_user: Optional[Any] = None
+) -> None:
     data = await state.get_data()
     preferred = data.get("event_code")
     recovered = get_latest_event_for_chat(
@@ -2843,10 +2902,9 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
             reply_markup=help_keyboard(),
         )
         return
-    async with ui_feedback.thinking(callback.message):
-        ok = await show_organizer_invite_step(
-            callback.message, state, from_user=callback.from_user
-        )
+    ok = await show_organizer_invite_step(
+        callback.message, state, from_user=callback.from_user
+    )
     if not ok:
         await callback.message.answer(
             "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
@@ -2930,6 +2988,14 @@ async def start_payload_handler(message: Message, command: CommandObject, state:
         await start_handler(message, state)
         return
 
+    load_events(merge=True)
+    async with ui_feedback.thinking(message):
+        await _start_payload_join_impl(message, command, state, payload)
+
+
+async def _start_payload_join_impl(
+    message: Message, command: CommandObject, state: FSMContext, payload: str
+) -> None:
     event_code = payload.removeprefix("join_")
     event = EVENTS.get(event_code)
     if not event:
@@ -2996,6 +3062,11 @@ async def participant_contribute_handler(message: Message, state: FSMContext) ->
 
 async def participant_confirm_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    async with ui_feedback.thinking(callback.message):
+        await _participant_confirm_callback_impl(callback, state)
+
+
+async def _participant_confirm_callback_impl(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     event_code = data.get("event_code")
     if not event_code or event_code not in EVENTS:
@@ -3081,7 +3152,6 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
 
 async def text_fallback_handler(message: Message, state: FSMContext) -> None:
-    load_events(merge=True)
     logging.info(
         "Text fallback chat_id=%s state=%s text=%s",
         message.chat.id,
@@ -3095,6 +3165,12 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
     if await handle_menu_shortcuts(message, state):
         return
 
+    load_events(merge=True)
+    async with ui_feedback.thinking(message):
+        await _text_fallback_handler_impl(message, state)
+
+
+async def _text_fallback_handler_impl(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     preferred = data.get("event_code")
     recovered = get_latest_event_for_chat(
