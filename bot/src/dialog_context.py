@@ -81,6 +81,9 @@ def build_step_context_human(
         "participant_contribute": "участник добавляет личные пожелания",
         "conversation": "свободный диалог, без смены шага сценария",
         "mixed": "смешанная реплика: есть и вопрос, и факты — сначала коротко поддержи, факты уйдут в бриф",
+        "no_active_trip": "нет привязанной поездки в FSM — помочь выбрать из списка или начать новую",
+        "participant_confirm": "участник на шаге подтверждения вклада — нужна кнопка",
+        "unknown": "шаг не определён",
     }
     step_line = step_map.get(flow_step, flow_step)
     if missing:

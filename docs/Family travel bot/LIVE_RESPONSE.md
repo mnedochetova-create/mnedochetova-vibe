@@ -15,6 +15,7 @@
 ## Где применяется
 
 - организатор: `organizer_dump`, `organizer_clarify` → `route_organizer_text_message`;
+- **corner** (ack / help / noise / media / без поездки): `handle_corner_guidance` → `corner_guidance.py` + промпты `prompts/corner_guidance_*.md` — тот же `USE_LLM_LIVE_RESPONSES` + `LLM_API_KEY`, контекст `trips_json` / `active_trip_json`; бриф не меняется. Путь A «дополнить» без фактов — статичный промпт, без LLM.
 - участник: `participant_contribute` → `route_participant_text_message`;
 - recovery в `text_fallback_handler` — та же логика intent.
 

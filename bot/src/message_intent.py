@@ -75,6 +75,21 @@ _EXPLORATION_HINTS = (
     r"вариант\w*\s+поездк",
 )
 
+_SUPPLEMENT_HINTS = (
+    r"дополн",
+    r"добав",
+    r"исправ",
+    r"измен",
+    r"уточн",
+    r"забыл",
+    r"не\s+указал",
+    r"ещ[её]\s+одн",
+    r"хочу\s+внест",
+    r"поправ",
+    r"внес[ти]",
+    r"обнови\s+бриф",
+)
+
 _CONVERSATION_HINTS = (
     r"^что\s+(написать|делать|дальше|отправить)",
     r"^как\s+(это|работает|начать|правильно)",
@@ -105,8 +120,31 @@ def _count_patterns(text: str, patterns: tuple[str, ...]) -> int:
     return sum(1 for pat in patterns if re.search(pat, text, flags=re.IGNORECASE))
 
 
+def brief_hint_score(text: str) -> int:
+    return _count_patterns((text or "").strip().lower(), _BRIEF_HINTS)
+
+
+def conversation_hint_score(text: str) -> int:
+    return _count_patterns((text or "").strip().lower(), _CONVERSATION_HINTS)
+
+
 def _ends_with_question(text: str) -> bool:
     return bool(re.search(r"\?\s*$", text))
+
+
+def is_supplement_request(text: str, *, brief_complete: bool) -> bool:
+    """
+    Просьба дополнить/исправить бриф без новых фактов в том же сообщении.
+    Срабатывает только когда бриф уже полный (brief_complete=True).
+    """
+    if not brief_complete:
+        return False
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    if _count_patterns(normalized, _BRIEF_HINTS) >= 1:
+        return False
+    return _count_patterns(normalized, _SUPPLEMENT_HINTS) >= 1
 
 
 def classify_message_intent(

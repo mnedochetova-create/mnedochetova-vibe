@@ -40,3 +40,19 @@ def test_question_with_many_facts_is_brief() -> None:
 def test_has_substantive_parsed_fields():
     assert message_intent.has_substantive_parsed_fields({"context_raw": "hello"}) is False
     assert message_intent.has_substantive_parsed_fields({"budget": "250k"}) is True
+
+
+def test_supplement_request_when_brief_complete():
+    assert message_intent.is_supplement_request("Хочу дополнить бриф", brief_complete=True)
+    assert message_intent.is_supplement_request("забыла про даты", brief_complete=True)
+
+
+def test_supplement_request_not_when_incomplete_brief():
+    assert not message_intent.is_supplement_request("Хочу дополнить", brief_complete=False)
+
+
+def test_supplement_request_not_when_facts_in_message():
+    assert not message_intent.is_supplement_request(
+        "Дополни: 2 взрослых, июль, до 300к",
+        brief_complete=True,
+    )

@@ -33,7 +33,9 @@ import brief_pipeline
 import brief_stay_enrich
 import env_util
 from parser_mode import get_parser_mode, llm_available
+import corner_guidance
 import dialog_context
+import input_kind
 import live_response
 import message_intent
 from interaction_log import flush_session_milestone, log_parse_result, log_session_action
@@ -1095,6 +1097,15 @@ CONVERSATION_FALLBACK_ORGANIZER = (
 CONVERSATION_FALLBACK_PARTICIPANT = (
     "Поняла. Если хочешь — помогу сформулировать пожелания; когда будешь готов, напиши факты одним сообщением."
 )
+ORGANIZER_SUPPLEMENT_PROMPT = (
+    "✏️ <b>Ок, дополним бриф.</b>\n\n"
+    "Напиши <b>одним сообщением</b>, что добавить или изменить: даты, состав, бюджет, пожелания.\n"
+    "Текущая сводка сохранится — обновлю только то, что пришлёшь."
+)
+ORGANIZER_SUPPLEMENT_PROMPT_AFTER_CONFIRM = (
+    ORGANIZER_SUPPLEMENT_PROMPT
+    + "\n\n<i>После дополнения бриф нужно будет снова подтвердить, если захочешь зафиксировать финал.</i>"
+)
 MIXED_FALLBACK_ORGANIZER = (
     "Вижу задачу — прикинуть комбо стран в твоём окне дат, а не зафиксировать одну страну. "
     "Коротко отвечу ниже; в брифе — варианты и пожелание собрать маршрут."
@@ -1158,6 +1169,7 @@ async def _apply_organizer_brief_from_message(
     has_prior_dump = isinstance(event.get("organizer_dump"), str) and bool(event.get("organizer_dump", "").strip())
 
     incoming, structured = parse_message_to_brief(text, role="organizer")
+    brief_updated = message_intent.has_substantive_parsed_fields(incoming)
     brief = brief_parser.merge_organizer_incoming(
         existing_brief,
         incoming,
@@ -1168,7 +1180,7 @@ async def _apply_organizer_brief_from_message(
     if event_code and event_code in EVENTS:
         if structured:
             EVENTS[event_code]["base_brief_structured"] = structured
-        if flow_step == "organizer_dump":
+        if flow_step == "organizer_dump" and brief_updated:
             prev_dump = EVENTS[event_code].get("organizer_dump")
             if isinstance(prev_dump, str) and prev_dump.strip():
                 EVENTS[event_code]["organizer_dump"] = _append_organizer_dump(prev_dump, text)
@@ -1179,6 +1191,8 @@ async def _apply_organizer_brief_from_message(
             brief["organizer_dump"] = dump_text
         brief = brief_parser.finalize_organizer_brief(brief)
         EVENTS[event_code]["brief"] = brief
+        if brief_updated and EVENTS[event_code].get("organizer_brief_confirmed_at"):
+            EVENTS[event_code].pop("organizer_brief_confirmed_at", None)
         touch_event(EVENTS[event_code])
         save_events()
         await ensure_organizer_name_on_event(
@@ -1194,6 +1208,48 @@ async def _apply_organizer_brief_from_message(
     missing = missing_brief_fields(brief)
     event_number = EVENTS.get(event_code, {}).get("event_number") if event_code else None
     return brief, missing, event_number, event_code
+
+
+async def _organizer_skip_invite_resend(
+    state: FSMContext,
+    event_code: Optional[str],
+) -> bool:
+    data = await state.get_data()
+    event = EVENTS.get(event_code, {}) if event_code else {}
+    return bool(
+        data.get("awaiting_supplement")
+        or (event and event.get("invite_instruction_message_id"))
+    )
+
+
+async def enter_organizer_supplement_mode(
+    state: FSMContext,
+    *,
+    event_code: Optional[str] = None,
+) -> None:
+    await state.set_state(FlowState.organizer_clarify)
+    await state.update_data(awaiting_supplement=True)
+    if event_code and event_code in EVENTS:
+        event = EVENTS[event_code]
+        if event.get("organizer_brief_confirmed_at"):
+            event.pop("organizer_brief_confirmed_at", None)
+            touch_event(event)
+            save_events()
+
+
+async def handle_organizer_supplement_prompt(message: Message, state: FSMContext) -> None:
+    """Путь A: просьба дополнить без фактов — режим уточнения, без парсера и invite."""
+    event_code, _brief = await resolve_organizer_event_and_brief(message, state)
+    event = EVENTS.get(event_code, {}) if event_code else {}
+    had_confirm = bool(event.get("organizer_brief_confirmed_at"))
+    await enter_organizer_supplement_mode(state, event_code=event_code)
+    prompt = (
+        ORGANIZER_SUPPLEMENT_PROMPT_AFTER_CONFIRM
+        if had_confirm
+        else ORGANIZER_SUPPLEMENT_PROMPT
+    )
+    await message.answer(prompt, reply_markup=main_menu_keyboard())
+    await save_dialog_turn(state, bot_text=prompt)
 
 
 async def handle_organizer_brief_input(
@@ -1219,6 +1275,15 @@ async def handle_organizer_brief_input(
         body = format_brief_update_message(
             brief, event_number=event_number, missing=missing
         )
+    skip_invite = False
+    if is_complete:
+        skip_invite = await _organizer_skip_invite_resend(state, _event_code)
+        await state.update_data(awaiting_supplement=False)
+        if skip_invite:
+            body = (
+                f"{body}\n\n"
+                "<i>Сводка обновлена. Ссылка для участников та же — кнопки приглашения выше.</i>"
+            )
     await message.answer(body, reply_markup=main_menu_keyboard())
     await save_dialog_turn(state, bot_text=body)
 
@@ -1237,7 +1302,7 @@ async def handle_organizer_brief_input(
         missing=missing,
         brief_html=summary_text,
     )
-    if is_complete:
+    if is_complete and not skip_invite:
         await send_next_step_after_brief(message, state)
 
 
@@ -1376,9 +1441,18 @@ async def handle_organizer_mixed(
         missing=missing,
     )
     body = "\n\n".join([intro, *brief_parts])
+    skip_invite = False
+    if is_complete:
+        skip_invite = await _organizer_skip_invite_resend(state, _event_code)
+        await state.update_data(awaiting_supplement=False)
+        if skip_invite:
+            body = (
+                f"{body}\n\n"
+                "<i>Сводка обновлена. Ссылка для участников та же — кнопки приглашения выше.</i>"
+            )
     await message.answer(body, reply_markup=main_menu_keyboard())
     await save_dialog_turn(state, bot_text=body)
-    if is_complete:
+    if is_complete and not skip_invite:
         await send_next_step_after_brief(message, state)
 
 
@@ -1390,19 +1464,41 @@ async def route_organizer_text_message(
 ) -> None:
     if await handle_menu_shortcuts(message, state):
         return
+    event_code, brief = await resolve_organizer_event_and_brief(message, state)
+    missing = missing_brief_fields(brief)
+    brief_complete = not missing
+    kind = input_kind.classify_input_kind(
+        message.text or "",
+        role="organizer",
+        flow_step=flow_step,
+        brief_complete=brief_complete,
+    )
+    if kind == "supplement_request":
+        await handle_organizer_supplement_prompt(message, state)
+        return
+    if kind != "substantive":
+        await handle_corner_guidance(
+            message,
+            state,
+            kind=kind,
+            role="organizer",
+            flow_step=flow_step,
+            brief=brief,
+            missing=missing,
+            preferred_event_code=event_code,
+        )
+        return
     intent = message_intent.classify_message_intent(
         message.text or "",
         role="organizer",
         flow_step=flow_step,
     )
-    # На шагах брифа чистые вопросы без фактов — в парсер; mixed и brief_input — как классификатор.
-    if flow_step in {"organizer_dump", "organizer_clarify"}:
-        text_stripped = (message.text or "").strip()
-        if text_stripped and intent == "conversation":
-            intent = "brief_input"
-        elif intent == "mixed":
-            pass
-    logging.info("Organizer message intent=%s flow_step=%s", intent, flow_step)
+    logging.info(
+        "Organizer message kind=%s intent=%s flow_step=%s",
+        kind,
+        intent,
+        flow_step,
+    )
     async with ui_feedback.thinking(message):
         if intent == "brief_input":
             await handle_organizer_brief_input(message, state, flow_step=flow_step)
@@ -1608,12 +1704,34 @@ async def handle_participant_mixed(message: Message, state: FSMContext) -> None:
 async def route_participant_text_message(message: Message, state: FSMContext) -> None:
     if await handle_menu_shortcuts(message, state):
         return
+    data = await state.get_data()
+    event_code = data.get("event_code")
+    base_brief = (EVENTS.get(event_code) or {}).get("brief") or {} if event_code else {}
+    missing = missing_brief_fields(base_brief)
+    kind = input_kind.classify_input_kind(
+        message.text or "",
+        role="participant",
+        flow_step="participant_contribute",
+        brief_complete=not missing,
+    )
+    if kind != "substantive":
+        await handle_corner_guidance(
+            message,
+            state,
+            kind=kind,
+            role="participant",
+            flow_step="participant_contribute",
+            brief=base_brief,
+            missing=missing,
+            preferred_event_code=event_code if isinstance(event_code, str) else None,
+        )
+        return
     intent = message_intent.classify_message_intent(
         message.text or "",
         role="participant",
         flow_step="participant_contribute",
     )
-    logging.info("Participant message intent=%s", intent)
+    logging.info("Participant message kind=%s intent=%s", kind, intent)
     async with ui_feedback.thinking(message):
         if intent == "brief_input":
             await handle_participant_brief_input(message, state)
@@ -2153,6 +2271,115 @@ def _action_priority(action_short: str) -> int:
     return 4
 
 
+def list_chat_trips(chat_id: int) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for code, event in EVENTS.items():
+        participants = event.get("participants") or {}
+        if _chat_id_matches(event.get("organizer_chat_id"), chat_id):
+            items.append(_build_my_event_item(code, event, "organizer", chat_id))
+        elif str(chat_id) in participants:
+            items.append(_build_my_event_item(code, event, "participant", chat_id))
+    items.sort(
+        key=lambda x: (
+            -int(x.get("updated_at", 0) or 0),
+            _action_priority(str(x.get("action_short") or "")),
+        )
+    )
+    return items
+
+
+def active_trip_snapshot_for_chat(
+    chat_id: int,
+    *,
+    preferred_event_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    recovered = get_latest_event_for_chat(
+        chat_id,
+        preferred_organizer_code=preferred_event_code,
+    )
+    if not recovered:
+        return {}
+    event_code, event, role = recovered
+    item = _build_my_event_item(event_code, event, role, chat_id)
+    item["code"] = event_code
+    if role == "organizer":
+        brief = brief_parser.restore_organizer_brief_from_event(event)
+    else:
+        brief = event.get("brief") or {}
+    item["missing_count"] = len(missing_brief_fields(brief))
+    item["invite_shown"] = bool(event.get("invite_instruction_message_id"))
+    item["brief_confirmed"] = bool(event.get("organizer_brief_confirmed_at"))
+    return item
+
+
+async def handle_corner_guidance(
+    message: Message,
+    state: FSMContext,
+    *,
+    kind: input_kind.InputKind,
+    role: str,
+    flow_step: str,
+    brief: Optional[Dict[str, Any]] = None,
+    missing: Optional[List[str]] = None,
+    preferred_event_code: Optional[str] = None,
+    user_text: Optional[str] = None,
+) -> None:
+    """Шум/помощь/медиа: LLM с контекстом поездок или статичный fallback; бриф не меняется."""
+    text = user_text if user_text is not None else (message.text or "")
+    await save_dialog_turn(state, user_text=text)
+    history = await load_dialog_history(state)
+    trips = list_chat_trips(message.chat.id)
+    active = active_trip_snapshot_for_chat(
+        message.chat.id,
+        preferred_event_code=preferred_event_code,
+    )
+    status_by_kind = {
+        "media": "Пользователь прислал фото/файл/голос — нужен текст",
+        "action_required": "Нужно нажать inline-кнопку под карточкой брифа",
+        "help": "Вопрос или просьба помочь сформулировать вводные",
+        "ack": "Короткая реплика без фактов (смайлик, привет, ок)",
+        "noise": "Сообщение не похоже на вводные по поездке",
+    }
+    fallback = corner_guidance.build_corner_fallback(
+        kind,
+        trips=trips,
+        active_trip=active,
+        role=role,
+        flow_step=flow_step,
+        missing=missing or (missing_brief_fields(brief) if brief else []),
+    )
+    context = {
+        "input_kind": kind,
+        "role": role,
+        "flow_step": "corner",
+        "human_status": status_by_kind.get(kind, "Нестандартный ввод"),
+        "allowed_next_action": "steer_to_trips | write_brief | use_button | paste_text",
+        "step_context_human": dialog_context.build_step_context_human(
+            role=role,
+            flow_step=flow_step,
+            missing=missing or [],
+        ),
+        "dialog_summary": dialog_context.build_dialog_summary(history),
+        "last_bot_message": dialog_context.last_bot_message(history),
+        "trips_json": trips,
+        "active_trip_json": active,
+        "user_message": text,
+    }
+    if live_response.live_responses_enabled():
+        async with ui_feedback.thinking(message):
+            reply = corner_guidance.corner_text_or_fallback(context, fallback)
+    else:
+        reply = corner_guidance.corner_text_or_fallback(context, fallback)
+    if kind == "action_required" and flow_step == "participant_confirm":
+        markup = participant_confirm_keyboard()
+    elif len(trips) > 1:
+        markup = my_events_keyboard(trips)
+    else:
+        markup = main_menu_keyboard()
+    await message.answer(reply, reply_markup=markup)
+    await save_dialog_turn(state, bot_text=reply)
+
+
 async def my_events_handler(message: Message, state: Optional[FSMContext]) -> None:
     load_events(merge=True)
     async with ui_feedback.thinking(message):
@@ -2602,11 +2829,16 @@ async def _brief_confirm_callback_impl(callback: CallbackQuery, state: FSMContex
 
 async def brief_edit_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    await state.set_state(FlowState.organizer_clarify)
-    await callback.message.answer(
-        "Хорошо, напиши одним сообщением, что уточнить или дополнить в брифе.",
-        reply_markup=main_menu_keyboard(),
+    event_code, _ = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
+    event = EVENTS.get(event_code, {}) if event_code else {}
+    had_confirm = bool(event.get("organizer_brief_confirmed_at"))
+    await enter_organizer_supplement_mode(state, event_code=event_code)
+    prompt = (
+        ORGANIZER_SUPPLEMENT_PROMPT_AFTER_CONFIRM
+        if had_confirm
+        else ORGANIZER_SUPPLEMENT_PROMPT
     )
+    await callback.message.answer(prompt, reply_markup=main_menu_keyboard())
 
 
 async def brief_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
@@ -3126,6 +3358,74 @@ async def participant_edit_callback_handler(callback: CallbackQuery, state: FSMC
     )
 
 
+async def participant_confirm_text_handler(message: Message, state: FSMContext) -> None:
+    await handle_corner_guidance(
+        message,
+        state,
+        kind="action_required",
+        role="participant",
+        flow_step="participant_confirm",
+    )
+
+
+def _media_user_message(message: Message) -> str:
+    caption = (message.caption or "").strip()
+    if caption:
+        return caption
+    if message.photo:
+        return "[фото без подписи]"
+    if message.document:
+        return "[файл без подписи]"
+    if message.voice:
+        return "[голосовое сообщение]"
+    if message.video:
+        return "[видео без подписи]"
+    if message.sticker:
+        return "[стикер]"
+    return "[медиа]"
+
+
+async def unsupported_media_handler(message: Message, state: FSMContext) -> None:
+    load_events(merge=True)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    recovered = get_latest_event_for_chat(
+        message.chat.id,
+        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+    )
+    role = "organizer"
+    flow_step = "unknown"
+    brief: Dict[str, Any] = {}
+    missing: List[str] = []
+    event_code: Optional[str] = None
+    if recovered:
+        event_code, event, role = recovered
+        event_code = event_code
+        if role == "organizer":
+            brief = brief_parser.restore_organizer_brief_from_event(event)
+            flow_step = "organizer_clarify"
+        else:
+            brief = event.get("brief") or {}
+            flow_step = "participant_contribute"
+        missing = missing_brief_fields(brief)
+    fsm = await state.get_state()
+    if fsm and "participant_confirm" in str(fsm):
+        flow_step = "participant_confirm"
+    elif fsm and "organizer_dump" in str(fsm):
+        flow_step = "organizer_dump"
+    await handle_corner_guidance(
+        message,
+        state,
+        kind="media",
+        role=role,
+        flow_step=flow_step,
+        brief=brief,
+        missing=missing,
+        preferred_event_code=event_code,
+        user_text=_media_user_message(message),
+    )
+
+
 async def organizer_dump_handler(message: Message, state: FSMContext) -> None:
     try:
         logging.info("Organizer dump received chat_id=%s", message.chat.id)
@@ -3166,6 +3466,34 @@ async def text_fallback_handler(message: Message, state: FSMContext) -> None:
         return
 
     load_events(merge=True)
+    data = await state.get_data()
+    preferred = data.get("event_code")
+    recovered = get_latest_event_for_chat(
+        message.chat.id,
+        preferred_organizer_code=preferred if isinstance(preferred, str) else None,
+    )
+    if not recovered:
+        kind = input_kind.classify_input_kind(
+            message.text or "",
+            role="organizer",
+            flow_step="unknown",
+            brief_complete=False,
+        )
+        if kind == "substantive" and text_looks_like_brief_submission(message.text or ""):
+            async with ui_feedback.thinking(message):
+                event_code = await bootstrap_organizer_event(message, state)
+                flow_step = await restore_organizer_fsm_state(state, event_code)
+                await route_organizer_text_message(message, state, flow_step=flow_step)
+            return
+        await handle_corner_guidance(
+            message,
+            state,
+            kind=kind if kind != "substantive" else "noise",
+            role="organizer",
+            flow_step="no_active_trip",
+        )
+        return
+
     async with ui_feedback.thinking(message):
         await _text_fallback_handler_impl(message, state)
 
@@ -3198,15 +3526,24 @@ async def _text_fallback_handler_impl(message: Message, state: FSMContext) -> No
             await route_participant_text_message(message, state)
             return
 
-    if text_looks_like_brief_submission(message.text or ""):
+    kind = input_kind.classify_input_kind(
+        message.text or "",
+        role="organizer",
+        flow_step="unknown",
+        brief_complete=False,
+    )
+    if kind == "substantive" and text_looks_like_brief_submission(message.text or ""):
         event_code = await bootstrap_organizer_event(message, state)
         flow_step = await restore_organizer_fsm_state(state, event_code)
         await route_organizer_text_message(message, state, flow_step=flow_step)
         return
 
-    await message.answer(
-        "Чтобы продолжить, выбери действие в меню ниже или напиши вводные по поездке одним сообщением.",
-        reply_markup=main_menu_keyboard(),
+    await handle_corner_guidance(
+        message,
+        state,
+        kind=kind if kind != "substantive" else "noise",
+        role="organizer",
+        flow_step="no_active_trip",
     )
 
 
@@ -3254,6 +3591,15 @@ async def main() -> None:
     dp.message.register(current_trip_handler, F.text.func(is_current_trip_text))
     dp.message.register(my_events_handler, F.text.func(is_my_events_text))
     dp.message.register(help_handler, F.text.func(is_help_text))
+    dp.message.register(
+        unsupported_media_handler,
+        F.photo | F.document | F.voice | F.video | F.sticker | F.animation,
+    )
+    dp.message.register(
+        participant_confirm_text_handler,
+        FlowState.participant_confirm,
+        F.text,
+    )
     dp.message.register(participant_contribute_handler, FlowState.participant_contribute, F.text)
     dp.message.register(organizer_dump_handler, FlowState.organizer_dump, F.text)
     dp.message.register(organizer_clarify_handler, FlowState.organizer_clarify, F.text)
