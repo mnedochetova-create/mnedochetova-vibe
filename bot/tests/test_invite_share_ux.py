@@ -34,8 +34,26 @@ def test_invite_step_message_short() -> None:
     text = main.format_invite_step_message(3)
     assert "#3" in text
     assert "Поделиться ↗️" in text
-    assert "Переслать" in text
-    assert "кнопка ниже" in text
+    assert "пересылки" in text
+    assert "организатора" in text
+
+
+def test_resolve_organizer_user_ignores_bot_message_author() -> None:
+    class BotUser:
+        is_bot = True
+        first_name = "MyTravel.Lab"
+
+    class Human:
+        is_bot = False
+        first_name = "Мария"
+        full_name = "Мария Н."
+        username = "maria_n"
+
+    class Msg:
+        from_user = BotUser()
+
+    assert main.resolve_organizer_user(Msg()) is None
+    assert main.resolve_organizer_user(Msg(), from_user=Human()).first_name == "Мария"
 
 
 def test_organizer_display_name_fallbacks() -> None:

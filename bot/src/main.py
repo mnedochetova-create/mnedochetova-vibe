@@ -180,12 +180,26 @@ def organizer_display_name_for_event(
     return str((event or {}).get("organizer_name") or "").strip()
 
 
+def resolve_organizer_user(message: Message, from_user: Any = None) -> Any:
+    """Кто нажал кнопку/написал: не путать с message.from_user у сообщений бота."""
+    if from_user is not None:
+        return from_user
+    author = message.from_user
+    if author is not None and not getattr(author, "is_bot", False):
+        return author
+    return None
+
+
 async def ensure_organizer_name_on_event(
     event: Dict[str, Any],
     user: Any = None,
     *,
     bot: Optional[Bot] = None,
+    message: Optional[Message] = None,
+    from_user: Any = None,
 ) -> None:
+    if user is None and message is not None:
+        user = resolve_organizer_user(message, from_user)
     name = organizer_display_name_from_user(user) if user else ""
     if not name and bot is not None:
         chat_id = event.get("organizer_chat_id")
@@ -431,9 +445,9 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
-        "В тексте: организатор по имени, ссылка в словах «кнопка ниже».\n"
-        "Кнопка «📤 Поделиться ↗️» — обновить карточку, если менялись вводные."
+        "Ниже — <b>сообщение для пересылки</b> участнику.\n"
+        "В нём имя организатора и ссылка для входа в поездку.\n"
+        "Кнопка «📤 Поделиться ↗️» обновит текст приглашения."
     )
 
 
@@ -1077,6 +1091,9 @@ async def _apply_organizer_brief_from_message(
         EVENTS[event_code]["brief"] = brief
         touch_event(EVENTS[event_code])
         save_events()
+        await ensure_organizer_name_on_event(
+            EVENTS[event_code], message.from_user, bot=message.bot
+        )
 
     if flow_step == "organizer_dump":
         await state.update_data(organizer_dump=text, brief=brief)
@@ -2118,10 +2135,14 @@ def invite_forward_card_already_sent(event: Dict[str, Any]) -> bool:
 async def send_or_update_invite_forward_card(
     message: Message,
     event: Dict[str, Any],
+    *,
+    from_user: Any = None,
 ) -> bool:
     """HTML-карточка для пересылки: «кнопка ниже» — настоящая ссылка (t.me/share не умеет)."""
     ensure_event_invite_link(event)
-    await ensure_organizer_name_on_event(event, message.from_user, bot=message.bot)
+    await ensure_organizer_name_on_event(
+        event, bot=message.bot, message=message, from_user=from_user
+    )
     invite_link = str(event.get("invite_link") or "").strip()
     if not invite_link:
         return False
@@ -2203,6 +2224,7 @@ async def show_organizer_invite_step(
     *,
     event: Optional[Dict[str, Any]] = None,
     event_code: Optional[str] = None,
+    from_user: Any = None,
 ) -> bool:
     """Показать актуальный шаг «Поделиться приглашением». Возвращает False, если ссылка недоступна."""
     if event is None:
@@ -2249,8 +2271,10 @@ async def show_organizer_invite_step(
         event["organizer_chat_id"] = message.chat.id
         touch_event(event)
         save_events()
-    await ensure_organizer_name_on_event(event, message.from_user, bot=message.bot)
-    await send_or_update_invite_forward_card(message, event)
+    await ensure_organizer_name_on_event(
+        event, bot=message.bot, message=message, from_user=from_user
+    )
+    await send_or_update_invite_forward_card(message, event, from_user=from_user)
     await log_session_action(
         message.bot,
         message,
@@ -2310,7 +2334,11 @@ async def event_open_callback_handler(callback: CallbackQuery, state: FSMContext
         )
         if not missing:
             await show_organizer_invite_step(
-                callback.message, state, event=event, event_code=event_code
+                callback.message,
+                state,
+                event=event,
+                event_code=event_code,
+                from_user=callback.from_user,
             )
         return
 
@@ -2512,14 +2540,16 @@ async def event_invite_share_callback_handler(callback: CallbackQuery, state: FS
             reply_markup=main_menu_keyboard(),
         )
         return
-    if not await send_or_update_invite_forward_card(callback.message, event):
+    if not await send_or_update_invite_forward_card(
+        callback.message, event, from_user=callback.from_user
+    ):
         await callback.message.answer(
             "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
             reply_markup=main_menu_keyboard(),
         )
         return
     await callback.message.answer(
-        "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).\n"
+        "↗️ <b>Перешлите сообщение выше</b> участнику.\n"
         "Ссылка для входа — в словах «кнопка ниже».",
         reply_markup=invite_waiting_keyboard(event),
     )
@@ -2695,7 +2725,9 @@ async def help_link_callback_handler(callback: CallbackQuery, state: FSMContext)
             reply_markup=help_keyboard(),
         )
         return
-    if not await show_organizer_invite_step(callback.message, state):
+    if not await show_organizer_invite_step(
+        callback.message, state, from_user=callback.from_user
+    ):
         await callback.message.answer(
             "Ссылка ещё не готова. Сначала собери базовый бриф — тогда появится приглашение.",
             reply_markup=help_keyboard(),
