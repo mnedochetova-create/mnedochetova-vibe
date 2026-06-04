@@ -172,21 +172,14 @@ def invite_join_code_from_link(invite_link: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def build_invite_join_hint(invite_link: str) -> str:
-    """Как войти без https:// в тексте (важно при пересылке сообщения)."""
-    code = invite_join_code_from_link(invite_link)
-    if not code:
-        return ""
-    if BOT_USERNAME:
-        return (
-            f"\n\nЧтобы войти в поездку: открой @{BOT_USERNAME} и нажми Start.\n"
-            f"Если поездка не подтянулась — отправь боту:\n"
-            f"<code>/start join_{code}</code>"
-        )
-    return (
-        f"\n\nЧтобы войти в поездку, отправь боту MyTravel.Lab:\n"
-        f"<code>/start join_{code}</code>"
-    )
+def build_invite_share_cta_markdown(invite_link: str) -> str:
+    """CTA со ссылкой в слове (Markdown для нативного «Поделиться» в Telegram)."""
+    return f"[Присоединиться к поездке]({invite_link})"
+
+
+def build_invite_share_cta_html(invite_link: str) -> str:
+    """Тот же CTA для HTML-сообщений бота (кликабельное слово)."""
+    return f'<a href="{html.escape(invite_link, quote=True)}">Присоединиться к поездке</a>'
 
 
 def build_invite_share_text(
@@ -194,17 +187,33 @@ def build_invite_share_text(
     *,
     trip_title: Optional[str] = None,
     include_link: bool = False,
+    for_native_share: bool = False,
 ) -> str:
-    """Текст приглашения для пересылки участнику (без https:// в теле)."""
+    """Текст приглашения для участника."""
     trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
     body = (
         f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
         "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
         "и допиши одним сообщением, что важно лично тебе."
     )
+    if for_native_share:
+        prefix = f"@{BOT_USERNAME}\n\n" if BOT_USERNAME else ""
+        return f"{prefix}{body}\n\n{build_invite_share_cta_markdown(invite_link)}"
     if include_link:
         return f"{body}\n\n{invite_link}"
-    return f"{body}{build_invite_join_hint(invite_link)}"
+    code = invite_join_code_from_link(invite_link)
+    if not code:
+        return body
+    if BOT_USERNAME:
+        return (
+            f"{body}\n\nЧтобы войти в поездку: открой @{BOT_USERNAME} и нажми Start.\n"
+            f"Если поездка не подтянулась — отправь боту:\n"
+            f"<code>/start join_{code}</code>"
+        )
+    return (
+        f"{body}\n\nЧтобы войти в поездку, отправь боту MyTravel.Lab:\n"
+        f"<code>/start join_{code}</code>"
+    )
 
 
 def invite_share_text_for_event(
@@ -217,7 +226,22 @@ def invite_share_text_for_event(
     brief_domestic_route.prepare_brief_for_display(brief, event=event)
     trip_title = brief_display.get_trip_title(brief)
     return build_invite_share_text(
-        invite_link, trip_title=trip_title, include_link=include_link
+        invite_link,
+        trip_title=trip_title,
+        include_link=include_link,
+        for_native_share=False,
+    )
+
+
+def invite_share_text_for_native_share(event: Dict[str, Any]) -> str:
+    invite_link = str((event or {}).get("invite_link") or "").strip()
+    import brief_domestic_route
+
+    brief = dict((event or {}).get("brief") or {})
+    brief_domestic_route.prepare_brief_for_display(brief, event=event)
+    trip_title = brief_display.get_trip_title(brief)
+    return build_invite_share_text(
+        invite_link, trip_title=trip_title, for_native_share=True
     )
 
 
@@ -236,10 +260,10 @@ def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Устар.: t.me/share/url дублирует url отдельной строкой. Оставлено для тестов."""
-    text = share_text if share_text is not None else build_invite_share_text(invite_link)
-    if invite_link and invite_link not in text:
-        text = f"{text}\n\n{invite_link}"
+    """Нативный выбор контакта: только text=, deeplink в [Присоединиться](url) без строки сверху."""
+    text = share_text if share_text is not None else build_invite_share_text(
+        invite_link, for_native_share=True
+    )
     return f"https://t.me/share/url?text={quote(text, safe='')}"
 
 
@@ -295,10 +319,9 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Ниже — <b>сообщение для пересылки</b> участнику (долгое нажатие → «Переслать»).\n"
-        "В тексте нет <code>https://</code> — вход через @бота и <code>/start join_…</code>.\n\n"
-        "Карточка для пересылки приходит сразу ниже. Кнопка «📤 Поделиться приглашением» — "
-        "напоминание, если карточку не видно."
+        "Нажми <b>📤 Поделиться ↗️</b> — выбери участника в списке Telegram.\n"
+        "В сообщении будет ссылка для входа в эту поездку "
+        "(слово «Присоединиться к поездке» — кликабельная ссылка)."
     )
 
 
@@ -1569,13 +1592,27 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 
 
 def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
+    invite_link = (event or {}).get("invite_link") if event else None
     if event:
         ensure_event_invite_link(event)
+        invite_link = event.get("invite_link")
+    if invite_link:
+        share_text = (
+            invite_share_text_for_native_share(event)
+            if event
+            else build_invite_share_text(invite_link, for_native_share=True)
+        )
+        share_url = telegram_share_url(invite_link, share_text=share_text)
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📤 Поделиться ↗️", url=share_url)],
+            ]
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📤 Поделиться приглашением",
+                    text="📤 Поделиться ↗️",
                     callback_data="event:invite_share",
                 )
             ],
@@ -2004,7 +2041,6 @@ async def show_organizer_invite_step(
         event["invite_instruction_message_id"] = instruction.message_id
         touch_event(event)
         save_events()
-    await send_invite_forward_card(message, event)
     await log_session_action(
         message.bot,
         message,
@@ -2255,32 +2291,9 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    """Старые callback-кнопки без url — снова показать шаг с «Поделиться ↗️»."""
     await callback.answer()
-    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
-    if not event:
-        await callback.message.answer(
-            "Сначала создай поездку через «✨ Новая поездка».",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-    await _patch_stale_invite_messages(callback.message.bot, event)
-    if not invite_forward_card_already_sent(event):
-        if not await send_invite_forward_card(callback.message, event):
-            await callback.message.answer(
-                "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
-                reply_markup=main_menu_keyboard(),
-            )
-            return
-        await callback.message.answer(
-            "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).",
-            reply_markup=invite_waiting_keyboard(event),
-        )
-        return
-    await callback.message.answer(
-        "↗️ <b>Карточка для пересылки уже выше</b> — долгое нажатие → «Переслать».\n"
-        "Нужна новая — открой «📂 Текущая поездка».",
-        reply_markup=invite_waiting_keyboard(event),
-    )
+    await show_organizer_invite_step(callback.message, state)
 
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
