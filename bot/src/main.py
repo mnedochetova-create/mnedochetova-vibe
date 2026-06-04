@@ -23,6 +23,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    LinkPreviewOptions,
 )
 from dotenv import load_dotenv
 
@@ -192,9 +193,34 @@ def invite_link_to_tg_deep_link(invite_link: str) -> str:
     return invite_link
 
 
-def build_invite_share_cta_markdown(invite_link: str) -> str:
-    """CTA для нативного share: deeplink в словах «кнопка ниже»."""
-    return f"👉 Присоединиться к поездке — [кнопка ниже]({invite_link_to_tg_deep_link(invite_link)})"
+def build_invite_share_cta_html(invite_link: str) -> str:
+    """Кликабельная «кнопка ниже» — только в HTML-сообщении бота (пересылка)."""
+    link_esc = html.escape(invite_link, quote=True)
+    return f'👉 Присоединиться к поездке — <a href="{link_esc}">кнопка ниже</a>.'
+
+
+def build_invite_share_body_plain(
+    invite_link: str,
+    *,
+    trip_title: Optional[str] = None,
+) -> str:
+    trip_label = f"«{trip_title}»" if trip_title else "нашей поездке"
+    return (
+        f"Привет! Приглашаю в поездку {trip_label} в MyTravel.Lab.\n\n"
+        "Организатор собрал базовый бриф — в боте посмотри, что уже собрано, "
+        "и допиши одним сообщением, что важно лично тебе."
+    )
+
+
+def build_invite_share_html_for_event(event: Dict[str, Any]) -> str:
+    invite_link = str((event or {}).get("invite_link") or "").strip()
+    import brief_domestic_route
+
+    brief = dict((event or {}).get("brief") or {})
+    brief_domestic_route.prepare_brief_for_display(brief, event=event)
+    trip_title = brief_display.get_trip_title(brief)
+    body = build_invite_share_body_plain(invite_link, trip_title=trip_title)
+    return f"{body}\n\n{build_invite_share_cta_html(invite_link)}"
 
 
 def build_invite_share_text(
@@ -212,8 +238,7 @@ def build_invite_share_text(
         "и допиши одним сообщением, что важно лично тебе."
     )
     if for_native_share:
-        prefix = f"@{BOT_USERNAME}\n\n" if BOT_USERNAME else ""
-        return f"{prefix}{body}\n\n{build_invite_share_cta_markdown(invite_link)}"
+        return f"{body}\n\n👉 Присоединиться к поездке — кнопка ниже."
     if include_link:
         return f"{body}\n\n{invite_link}"
     code = invite_join_code_from_link(invite_link)
@@ -334,8 +359,8 @@ def format_invite_step_message(
         head = "✨ <b>Бриф готов</b>"
     return (
         f"{head}\n\n"
-        "Нажми <b>📤 Поделиться ↗️</b> — откроется список контактов Telegram.\n"
-        "В приглашении ссылка спрятана в словах «кнопка ниже»."
+        "Нажми <b>📤 Поделиться ↗️</b> — бот пришлёт сообщение для пересылки.\n"
+        "В нём слова «кнопка ниже» — кликабельная ссылка для входа в поездку."
     )
 
 
@@ -1660,22 +1685,8 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
 
 
 def invite_ready_keyboard(event: Optional[Dict[str, Any]] = None) -> InlineKeyboardMarkup:
-    invite_link = (event or {}).get("invite_link") if event else None
     if event:
         ensure_event_invite_link(event)
-        invite_link = event.get("invite_link")
-    if invite_link:
-        share_text = (
-            invite_share_text_for_native_share(event)
-            if event
-            else build_invite_share_text(invite_link, for_native_share=True)
-        )
-        share_url = telegram_share_url(invite_link, share_text=share_text)
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="📤 Поделиться ↗️", url=share_url)],
-            ]
-        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -2019,6 +2030,49 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         role="organizer",
         event_number=event_number,
     )
+
+
+INVITE_LINK_PREVIEW_DISABLED = LinkPreviewOptions(is_disabled=True)
+
+
+def invite_forward_card_already_sent(event: Dict[str, Any]) -> bool:
+    return bool((event or {}).get("invite_forward_message_id"))
+
+
+async def send_or_update_invite_forward_card(
+    message: Message,
+    event: Dict[str, Any],
+) -> bool:
+    """HTML-карточка для пересылки: «кнопка ниже» — настоящая ссылка (t.me/share не умеет)."""
+    ensure_event_invite_link(event)
+    invite_link = str(event.get("invite_link") or "").strip()
+    if not invite_link:
+        return False
+    card_html = build_invite_share_html_for_event(event)
+    chat_id = event.get("organizer_chat_id") or message.chat.id
+    forward_id = event.get("invite_forward_message_id")
+    if forward_id:
+        try:
+            await message.bot.edit_message_text(
+                card_html,
+                chat_id=chat_id,
+                message_id=forward_id,
+                link_preview_options=INVITE_LINK_PREVIEW_DISABLED,
+            )
+            return True
+        except Exception:
+            logging.debug("invite forward card edit failed, resending", exc_info=True)
+            event.pop("invite_forward_message_id", None)
+    sent = await message.answer(
+        card_html,
+        link_preview_options=INVITE_LINK_PREVIEW_DISABLED,
+    )
+    if sent and chat_id:
+        event["invite_forward_message_id"] = sent.message_id
+        event["organizer_chat_id"] = chat_id
+        touch_event(event)
+        save_events()
+    return bool(sent)
 
 
 async def _remove_invite_forward_card(bot: Bot, event: Dict[str, Any]) -> None:
@@ -2370,9 +2424,26 @@ async def event_invite_link_callback_handler(callback: CallbackQuery, state: FSM
 
 
 async def event_invite_share_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
-    """Старые callback-кнопки без url — снова показать шаг с «Поделиться ↗️»."""
+    """Карточка для пересылки с HTML-ссылкой в «кнопка ниже»."""
     await callback.answer()
-    await show_organizer_invite_step(callback.message, state)
+    _event_code, event = await _organizer_event_from_state(state, chat_id=callback.message.chat.id)
+    if not event:
+        await callback.message.answer(
+            "Сначала создай поездку через «✨ Новая поездка».",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    if not await send_or_update_invite_forward_card(callback.message, event):
+        await callback.message.answer(
+            "Ссылка пока недоступна. Перезапусти бота командой /start или создай поездку заново.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+    await callback.message.answer(
+        "↗️ <b>Перешлите сообщение выше</b> участнику (долгое нажатие → «Переслать»).\n"
+        "Ссылка для входа — в словах «кнопка ниже».",
+        reply_markup=invite_waiting_keyboard(event),
+    )
 
 
 async def event_invite_sent_callback_handler(callback: CallbackQuery, state: FSMContext) -> None:
