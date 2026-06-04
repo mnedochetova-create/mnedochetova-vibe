@@ -95,9 +95,21 @@ def touch_event(event: Dict[str, Any]) -> None:
     event["updated_at"] = now_ts()
 
 
-def load_events() -> None:
+def load_events(*, merge: bool = False) -> None:
+    """Загрузить events.json. merge=True — не затирать поездки, созданные в памяти (новая поездка)."""
     global EVENTS
-    EVENTS = load_events_from_file()
+    disk = load_events_from_file()
+    if not merge:
+        EVENTS = disk
+        return
+    for code, row in disk.items():
+        if code not in EVENTS:
+            EVENTS[code] = row
+            continue
+        local_ts = int(EVENTS[code].get("updated_at") or EVENTS[code].get("created_at") or 0)
+        disk_ts = int(row.get("updated_at") or row.get("created_at") or 0)
+        if disk_ts > local_ts:
+            EVENTS[code] = row
 
 
 def save_events() -> None:
@@ -172,6 +184,19 @@ def invite_join_code_from_link(invite_link: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def invite_link_to_tg_deep_link(invite_link: str) -> str:
+    """tg:// без https:// — иначе Telegram выносит ссылку отдельной строкой в share."""
+    code = invite_join_code_from_link(invite_link)
+    if BOT_USERNAME and code:
+        return f"tg://resolve?domain={BOT_USERNAME}&start=join_{code}"
+    return invite_link
+
+
+def build_invite_share_cta_markdown(invite_link: str) -> str:
+    """CTA для нативного share: deeplink в словах «кнопка ниже»."""
+    return f"👉 Присоединиться к поездке — [кнопка ниже]({invite_link_to_tg_deep_link(invite_link)})"
+
+
 def build_invite_share_text(
     invite_link: str,
     *,
@@ -187,9 +212,8 @@ def build_invite_share_text(
         "и допиши одним сообщением, что важно лично тебе."
     )
     if for_native_share:
-        # Как @torah_robot: @бот + текст; deeplink — в превью кнопки (параметр url=), не в теле.
         prefix = f"@{BOT_USERNAME}\n\n" if BOT_USERNAME else ""
-        return f"{prefix}{body}\n\n👉 Присоединиться к поездке — кнопка ниже."
+        return f"{prefix}{body}\n\n{build_invite_share_cta_markdown(invite_link)}"
     if include_link:
         return f"{body}\n\n{invite_link}"
     code = invite_join_code_from_link(invite_link)
@@ -251,16 +275,11 @@ def invite_forward_keyboard(invite_link: str) -> InlineKeyboardMarkup:
 
 
 def telegram_share_url(invite_link: str, share_text: Optional[str] = None) -> str:
-    """Нативный выбор контакта (t.me/share/url): url=deeplink, text без ссылки в теле."""
+    """Нативный выбор контакта: только text=, ссылка в [кнопка ниже](deeplink) без строки сверху."""
     text = share_text if share_text is not None else build_invite_share_text(
         invite_link, for_native_share=True
     )
-    if invite_link and invite_link in text:
-        text = text.replace(invite_link, "").strip().rstrip("\n")
-    return (
-        "https://t.me/share/url?"
-        f"url={quote(invite_link, safe='')}&text={quote(text, safe='')}"
-    )
+    return f"https://t.me/share/url?text={quote(text, safe='')}"
 
 
 def ensure_event_invite_link(event: Dict[str, Any]) -> Optional[str]:
@@ -316,7 +335,7 @@ def format_invite_step_message(
     return (
         f"{head}\n\n"
         "Нажми <b>📤 Поделиться ↗️</b> — откроется список контактов Telegram.\n"
-        "Участнику уйдёт приглашение с кнопкой входа в поездку (как у @torah_robot)."
+        "В приглашении ссылка спрятана в словах «кнопка ниже»."
     )
 
 
@@ -546,6 +565,45 @@ def pick_best_organizer_event(chat_id: int) -> Optional[tuple[str, Dict[str, Any
     return code, EVENTS[code]
 
 
+def _hydrate_organizer_event_from_fsm(
+    chat_id: int,
+    preferred_code: str,
+    data: Dict[str, Any],
+) -> Optional[str]:
+    """Восстановить поездку из FSM, если reload с диска убрал только что созданный event."""
+    if preferred_code in EVENTS:
+        return preferred_code
+    if data.get("role") != "organizer":
+        return None
+    if not _chat_id_matches(data.get("organizer_chat_id"), chat_id):
+        return None
+    event_number = data.get("event_number")
+    if not isinstance(event_number, int):
+        event_number = next_event_number()
+    invite_link = (
+        f"https://t.me/{BOT_USERNAME}?start=join_{preferred_code}" if BOT_USERNAME else None
+    )
+    EVENTS[preferred_code] = {
+        "code": preferred_code,
+        "event_number": event_number,
+        "created_at": now_ts(),
+        "updated_at": now_ts(),
+        "organizer_chat_id": chat_id,
+        "organizer_dump": data.get("organizer_dump"),
+        "participants": {},
+        "invite_link": invite_link,
+        "brief": data.get("brief") if isinstance(data.get("brief"), dict) else {},
+    }
+    touch_event(EVENTS[preferred_code])
+    save_events()
+    logging.info(
+        "Re-hydrated organizer event %s from FSM for chat_id=%s",
+        preferred_code,
+        chat_id,
+    )
+    return preferred_code
+
+
 def resolve_organizer_event_code(chat_id: int, preferred_code: Optional[str] = None) -> Optional[str]:
     """Активная поездка организатора: сначала FSM/явный выбор, иначе самая свежая по updated_at."""
     if preferred_code and preferred_code in EVENTS:
@@ -573,11 +631,14 @@ async def resolve_organizer_event_and_brief(
     state: FSMContext,
 ) -> tuple[str, Dict[str, Any]]:
     """Бриф пишем в поездку из FSM; без FSM — в последнюю обновлённую поездку организатора."""
-    load_events()
+    load_events(merge=True)
     chat_id = message.chat.id
     data = await state.get_data()
     preferred = data.get("event_code")
-    code = resolve_organizer_event_code(chat_id, preferred if isinstance(preferred, str) else None)
+    preferred_str = preferred if isinstance(preferred, str) else None
+    if preferred_str and preferred_str not in EVENTS:
+        _hydrate_organizer_event_from_fsm(chat_id, preferred_str, data)
+    code = resolve_organizer_event_code(chat_id, preferred_str)
     if not code:
         code = await bootstrap_organizer_event(message, state)
     existing_brief = brief_parser.restore_organizer_brief_from_event(EVENTS.get(code, {}) or {})
@@ -606,13 +667,13 @@ async def restore_organizer_fsm_state(state: FSMContext, event_code: str) -> str
 
 
 async def bootstrap_organizer_event(message: Message, state: FSMContext) -> str:
-    load_events()
+    load_events(merge=True)
     data = await state.get_data()
     preferred = data.get("event_code")
-    code = resolve_organizer_event_code(
-        message.chat.id,
-        preferred if isinstance(preferred, str) else None,
-    )
+    preferred_str = preferred if isinstance(preferred, str) else None
+    if preferred_str and preferred_str not in EVENTS:
+        _hydrate_organizer_event_from_fsm(message.chat.id, preferred_str, data)
+    code = resolve_organizer_event_code(message.chat.id, preferred_str)
     if code:
         await restore_organizer_fsm_state(state, code)
         return code
@@ -939,7 +1000,11 @@ async def handle_organizer_brief_input(
         chat_id=message.chat.id,
         missing=missing,
     )
-    body = "\n\n".join(parts)
+    body = "\n\n".join(p for p in parts if p and str(p).strip())
+    if not body.strip():
+        body = format_brief_update_message(
+            brief, event_number=event_number, missing=missing
+        )
     await message.answer(body, reply_markup=main_menu_keyboard())
     await save_dialog_turn(state, bot_text=body)
 
@@ -1907,14 +1972,12 @@ async def my_events_handler(message: Message, state: Optional[FSMContext]) -> No
 
 async def new_event_handler(message: Message, state: FSMContext) -> None:
     logging.info("New event requested by chat_id=%s", message.chat.id)
-    await state.update_data(
-        role="organizer",
-        organizer_chat_id=message.chat.id,
-        brief={},
-    )
-    await state.set_state(FlowState.organizer_dump)
+    await state.clear()
     event_code = new_event_code()
     event_number = next_event_number()
+    invite_link = (
+        f"https://t.me/{BOT_USERNAME}?start=join_{event_code}" if BOT_USERNAME else None
+    )
     EVENTS[event_code] = {
         "code": event_code,
         "event_number": event_number,
@@ -1923,18 +1986,19 @@ async def new_event_handler(message: Message, state: FSMContext) -> None:
         "organizer_chat_id": message.chat.id,
         "organizer_dump": None,
         "participants": {},
-        "invite_link": None,
+        "invite_link": invite_link,
+        "brief": {},
     }
-    await state.update_data(event_code=event_code)
-
-    if BOT_USERNAME:
-        invite_link = f"https://t.me/{BOT_USERNAME}?start=join_{event_code}"
-    else:
-        invite_link = None
-
-    EVENTS[event_code]["invite_link"] = invite_link
     touch_event(EVENTS[event_code])
     save_events()
+    await state.update_data(
+        role="organizer",
+        organizer_chat_id=message.chat.id,
+        event_code=event_code,
+        event_number=event_number,
+        brief={},
+    )
+    await state.set_state(FlowState.organizer_dump)
 
     await message.answer(
         format_trip_created_organizer_message(event_number),
@@ -2138,9 +2202,11 @@ async def _organizer_event_from_state(
     chat_id: Optional[int] = None,
 ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Поездка организатора: FSM, иначе последняя по chat_id (важно при MemoryStorage / нескольких репликах)."""
-    load_events()
+    load_events(merge=True)
     data = await state.get_data()
     preferred = data.get("event_code") if isinstance(data.get("event_code"), str) else None
+    if preferred and preferred not in EVENTS and chat_id is not None:
+        _hydrate_organizer_event_from_fsm(chat_id, preferred, data)
     code: Optional[str] = None
     if chat_id is not None:
         code = resolve_organizer_event_code(chat_id, preferred)
@@ -2705,7 +2771,7 @@ async def organizer_clarify_handler(message: Message, state: FSMContext) -> None
 
 
 async def text_fallback_handler(message: Message, state: FSMContext) -> None:
-    load_events()
+    load_events(merge=True)
     logging.info(
         "Text fallback chat_id=%s state=%s text=%s",
         message.chat.id,

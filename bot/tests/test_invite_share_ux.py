@@ -1,4 +1,4 @@
-"""Шаг приглашения: torah-style share (url+text) и без карточки пересылки."""
+"""Шаг приглашения: нативный share и deeplink в [кнопка ниже](url)."""
 
 import sys
 from pathlib import Path
@@ -21,7 +21,8 @@ def test_invite_ready_keyboard_uses_native_share_url(monkeypatch) -> None:
     assert btn.text == "📤 Поделиться ↗️"
     assert btn.url is not None
     assert btn.url.startswith("https://t.me/share/url?")
-    assert "url=" in btn.url
+    assert "text=" in btn.url
+    assert "url=" not in btn.url
     assert btn.callback_data is None
 
 
@@ -79,13 +80,14 @@ def test_build_invite_share_text_for_contacts(monkeypatch) -> None:
     assert with_link.endswith(link)
 
 
-def test_build_invite_share_text_native_torah_style(monkeypatch) -> None:
+def test_build_invite_share_text_native_markdown_cta(monkeypatch) -> None:
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     link = "https://t.me/MyTravelLabBot?start=join_x"
     text = main.build_invite_share_text(link, for_native_share=True)
     assert "@MyTravelLabBot" in text
-    assert "кнопка ниже" in text
-    assert link not in text
+    assert main.build_invite_share_cta_markdown(link) in text
+    assert "[кнопка ниже]" in text
+    assert "tg://resolve?domain=MyTravelLabBot&start=join_x" in text
     assert "https://" not in text
 
 
@@ -97,8 +99,9 @@ def test_invite_share_text_for_native_share(monkeypatch) -> None:
     }
     text = main.invite_share_text_for_native_share(event)
     assert "Во Францию с семьёй" in text
-    assert "join_abc" not in text
-    assert "https://" not in text
+    assert "[кнопка ниже]" in text
+    assert "tg://resolve" in text
+    assert "join_abc" in text
 
 
 def test_invite_share_text_for_event_uses_trip_title(monkeypatch) -> None:
@@ -117,7 +120,7 @@ def test_invite_join_code_from_link() -> None:
     assert main.invite_join_code_from_link("https://t.me/Bot?start=join_596c75") == "596c75"
 
 
-def test_telegram_share_url_torah_url_and_text(monkeypatch) -> None:
+def test_telegram_share_url_text_with_markdown_button(monkeypatch) -> None:
     monkeypatch.setattr(main, "BOT_USERNAME", "MyTravelLabBot")
     link = "https://t.me/MyTravelLabBot?start=join_abc123"
     event = {"invite_link": link, "brief": {"trip_title": "Во Францию с семьёй"}}
@@ -125,8 +128,9 @@ def test_telegram_share_url_torah_url_and_text(monkeypatch) -> None:
         link, share_text=main.invite_share_text_for_native_share(event)
     )
     query = parse_qs(urlparse(share_url).query)
-    assert query["url"][0] == link
+    assert "url" not in query
     text = unquote(query["text"][0])
     assert "Во Францию с семьёй" in text
-    assert link not in text
+    assert "[кнопка ниже]" in text
+    assert "join_abc123" in text
     assert "@MyTravelLabBot" in text
